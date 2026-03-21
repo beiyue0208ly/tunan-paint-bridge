@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>ComfyPS Bridge</title>
+    <style>
+        /* 宿主层极简样式: webview 占满整个面板 */
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #1e1e1e;
+        }
+        webview {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <webview
+        id="main-webview"
+        src="./webview/index.html"
+        uxpAllowInspector="true"
+    ></webview>
+    <script src="./host/protocol.js"></script>
+    <script src="./host/services/task-center.js"></script>
+    <script src="./host/services/tunan-capture-service.js"></script>
+    <script src="./host/services/tunan-photoshop-service.js"></script>
+    <script src="./host/services/workflow-service.js"></script>
+    <script src="./host/services/comfy-engine.js"></script>
+    <script src="./host/services/api-engine.js"></script>
+    <script src="./host/dispatcher.js"></script>
+    <script src="./host.js"></script>
+</body>
+</html>

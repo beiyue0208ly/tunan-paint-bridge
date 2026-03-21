@@ -1,0 +1,82 @@
+{
+  "id": "com.tunan.paintbridge-vue",
+  "name": "图南画桥",
+  "version": "1.0.6",
+  "description": "Vue 3 WebView-based UXP panel for TuNan Paint Bridge",
+  "author": "tunan",
+  "main": "./index.html",
+  "manifestVersion": 6,
+  "featureFlags": {
+    "enableSWCSupport": true,
+    "CSSNextSupport": true
+  },
+  "host": {
+    "app": "PS",
+    "minVersion": "25.0.0",
+    "data": {
+      "apiVersion": 2
+    }
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "comfyps.vuePanel",
+      "label": {
+        "default": "图南画桥"
+      },
+      "minimumSize": {
+        "width": 500,
+        "height": 760
+      },
+      "maximumSize": {
+        "width": 1000,
+        "height": 1600
+      },
+      "preferredDockedSize": {
+        "width": 530,
+        "height": 860
+      },
+      "preferredFloatingSize": {
+        "width": 530,
+        "height": 860
+      },
+      "icons": [
+        {
+          "width": 23,
+          "height": 23,
+          "path": "icons/panel-icon.png",
+          "scale": [1, 1.25, 1.5, 2],
+          "theme": ["all"],
+          "species": ["chrome"]
+        }
+      ]
+    }
+  ],
+  "icons": [
+    {
+      "width": 48,
+      "height": 48,
+      "path": "icons/plugin-icon.png",
+      "scale": [1, 2],
+      "theme": ["all"],
+      "species": ["pluginList"]
+    }
+  ],
+  "requiredPermissions": {
+    "allowCodeGenerationFromStrings": true,
+    "localFileSystem": "request",
+    "clipboard": "readAndWrite",
+    "ipc": {
+      "enablePluginCommunication": true
+    },
+    "network": {
+      "domains": "all"
+    },
+    "webview": {
+      "allow": "yes",
+      "domains": "all",
+      "allowLocalRendering": "yes",
+      "enableMessageBridge": "localAndRemote"
+    }
+  }
+}

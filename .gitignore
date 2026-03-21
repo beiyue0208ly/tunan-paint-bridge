@@ -1,0 +1,57 @@
+# OS / editor
+Thumbs.db
+.DS_Store
+.claude/
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Local env / sync client noise
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.local
+*.log
+*.baiduyun.uploading.cfg
+
+# Node / frontend build outputs
+node_modules/
+dist/
+dist-verify/
+dist-ssr/
+.cache/
+.vite/
+coverage/
+release-build/
+
+# Python caches / virtualenvs
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Project temp / debug artifacts
+*.backup
+*.bak
+*.tmp
+*.temp
+*.orig
+_temp_*/
+tunan-*-check.png
+!docs/assets/
+!docs/assets/**
+temp*.txt
+style_dump.css
+fix*.cjs
+
+# Release artifacts
+*.ccx
