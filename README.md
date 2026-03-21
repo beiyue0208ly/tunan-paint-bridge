@@ -94,3 +94,9 @@ Copyright (c) 2026 Beiyue / Tunan Painting Studio
 因为只保留了核心链路，所以代码会尽量保持纯净，不去堆和创作主流程无关的复杂性。
 
 如果你在安装或使用过程中遇到问题，欢迎通过仓库 Issues 反馈。
+
+## 📮 联系方式
+
+- Issues：GitHub Issues
+- Email：76030821@qq.com
+- QQ：76030821

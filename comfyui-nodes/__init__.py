@@ -32,7 +32,7 @@ print = safe_print
 __version__ = "1.0.6"
 __author__ = AUTHOR_NAME
 __description__ = "Photoshop and ComfyUI local bridge nodes"
-__contact__ = "QQ: 76030821"
+__contact__ = "Email: 76030821@qq.com | QQ: 76030821"
 
 if sys.version_info < (3, 8):
     raise RuntimeError(f"{PRODUCT_NAME} requires Python 3.8+")

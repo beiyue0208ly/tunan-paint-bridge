@@ -55,3 +55,9 @@ Photoshop 插件以 `.ccx` 形式发布。
 3. 安装说明
 
 按顺序装完这两部分就可以开始使用图南画桥。
+
+## 五、联系方式
+
+- Issues：GitHub Issues
+- Email：76030821@qq.com
+- QQ：76030821

@@ -9,16 +9,23 @@ $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $bundleRoot = Join-Path $projectRoot $OutputRoot
+$workRoot = Join-Path $projectRoot "release-work"
 $bundleName = "tunan-paint-bridge-v$Version"
-$stagingRoot = Join-Path $bundleRoot $bundleName
+$stagingRoot = Join-Path $workRoot $bundleName
+$tempRoot = Join-Path $workRoot "_bundle-temp"
 $photoshopDir = Join-Path $stagingRoot "photoshop"
 $comfyDir = Join-Path $stagingRoot "comfyui"
 $installDir = Join-Path $stagingRoot "install"
-$nodeTempDir = Join-Path $comfyDir "tunan-paint-bridge-nodes"
+$nodeTempDir = Join-Path $tempRoot "tunan-paint-bridge-nodes"
+$nodeZipTempPath = Join-Path $tempRoot "tunan-paint-bridge-nodes-v$Version.zip"
 $nodeZipName = "tunan-paint-bridge-nodes-v$Version.zip"
+$finalNodeZipPath = Join-Path $bundleRoot $nodeZipName
+$nodeZipPath = Join-Path $comfyDir $nodeZipName
+$ccxFileName = "tunan-paint-bridge-v$Version.ccx"
+$finalCcxPath = Join-Path $bundleRoot $ccxFileName
 $bundleZipPath = Join-Path $bundleRoot "$bundleName.zip"
 
-$resolvedCcx = Resolve-Path $CcxPath
+$resolvedCcx = (Resolve-Path $CcxPath).Path
 
 if (Test-Path $stagingRoot) {
     Remove-Item -Recurse -Force $stagingRoot
@@ -28,6 +35,12 @@ if (Test-Path $bundleZipPath) {
     Remove-Item -Force $bundleZipPath
 }
 
+if (Test-Path $tempRoot) {
+    Remove-Item -Recurse -Force $tempRoot
+}
+
+New-Item -ItemType Directory -Force -Path $bundleRoot | Out-Null
+New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $photoshopDir | Out-Null
 New-Item -ItemType Directory -Force -Path $comfyDir | Out-Null
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
@@ -57,27 +70,19 @@ foreach ($file in $nodeRootFiles) {
 Copy-Item -Path (Join-Path $nodeSource "backend\*") -Destination (Join-Path $nodeTempDir "backend") -Recurse -Force
 Copy-Item -Path (Join-Path $nodeSource "web\*") -Destination (Join-Path $nodeTempDir "web") -Recurse -Force
 
-$ccxFileName = "图南画桥-v$Version.ccx"
-Copy-Item -Path $resolvedCcx -Destination (Join-Path $photoshopDir $ccxFileName) -Force
+if ([System.IO.Path]::GetFullPath($resolvedCcx) -ne [System.IO.Path]::GetFullPath($finalCcxPath)) {
+    Copy-Item -Path $resolvedCcx -Destination $finalCcxPath -Force
+}
 
-$nodeZipPath = Join-Path $comfyDir $nodeZipName
-Compress-Archive -Path (Join-Path $nodeTempDir "*") -DestinationPath $nodeZipPath -Force
+Copy-Item -Path $finalCcxPath -Destination (Join-Path $photoshopDir $ccxFileName) -Force
+
+Compress-Archive -Path (Join-Path $nodeTempDir "*") -DestinationPath $nodeZipTempPath -Force
+Copy-Item -Path $nodeZipTempPath -Destination $finalNodeZipPath -Force
+Copy-Item -Path $finalNodeZipPath -Destination $nodeZipPath -Force
 Remove-Item -Recurse -Force $nodeTempDir
+Remove-Item -Force $nodeZipTempPath
 
-$installReadme = @"
-# 图南画桥安装说明
-
-1. Photoshop 插件：
-   双击 photoshop/$ccxFileName 安装 `.ccx`
-2. ComfyUI 节点：
-   解压 comfyui/$nodeZipName 到 `ComfyUI/custom_nodes/`
-3. 如果网站下载页还没上线，请查看 GitHub Releases 获取最新版本说明
-
-官网：
-https://tunanart.cn
-"@
-
-Set-Content -Path (Join-Path $installDir "README-安装.md") -Value $installReadme -Encoding UTF8
+Copy-Item -LiteralPath (Join-Path $projectRoot "INSTALL.md") -Destination (Join-Path $installDir "INSTALL.md") -Force
 
 $manifestObject = [ordered]@{
     version = $Version
@@ -100,5 +105,13 @@ $manifestJson = $manifestObject | ConvertTo-Json -Depth 6
 Set-Content -Path (Join-Path $stagingRoot "release-manifest.json") -Value $manifestJson -Encoding UTF8
 
 Compress-Archive -Path (Join-Path $stagingRoot "*") -DestinationPath $bundleZipPath -Force
+
+if (Test-Path $stagingRoot) {
+    Remove-Item -Recurse -Force $stagingRoot
+}
+
+if (Test-Path $tempRoot) {
+    Remove-Item -Recurse -Force $tempRoot
+}
 
 Write-Host "[build-release-bundle] Bundle created: $bundleZipPath"

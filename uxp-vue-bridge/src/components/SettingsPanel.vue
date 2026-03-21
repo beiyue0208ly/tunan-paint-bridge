@@ -366,7 +366,7 @@
       <div class="settings-footer">
         <div class="credit-elegant">
           <div class="credit-main">MADE BY <span>图南绘画工作室</span></div>
-          <div class="credit-sub">约稿 QQ: 76030821 | V 1.1.0</div>
+          <div class="credit-sub">约稿 QQ: 76030821 | V {{ appVersion }}</div>
         </div>
       </div>
 
@@ -576,6 +576,8 @@ import {
 } from '../core/settings/bridgeSettings'
 import CustomSelect from './CustomSelect.vue'
 import CustomSlider from './CustomSlider.vue'
+
+const appVersion = __APP_VERSION__
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
