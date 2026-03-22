@@ -99,11 +99,16 @@ export function useBridgeApp() {
   const denoiseVisualValue = ref(denoiseValue.value)
   const realtimeOn = ref(false)
   const showPromptPanel = ref(false)
-  const positivePrompt = ref('')
-  const negativePrompt = ref('ugly, blurry, deformed, bad anatomy, watermark, text')
-  const stepsValue = ref(20)
-  const cfgScale = ref(7)
-  const seedValue = ref(-1)
+  const positivePrompt = ref(DEFAULT_SETTINGS.positivePrompt)
+  const negativePrompt = ref(DEFAULT_SETTINGS.negativePrompt)
+  const stepsValue = ref(DEFAULT_SETTINGS.steps)
+  const cfgScale = ref(DEFAULT_SETTINGS.cfgScale)
+  const seedValue = ref(DEFAULT_SETTINGS.seed)
+  const promptTemplates = ref(
+    Array.isArray(DEFAULT_SETTINGS.promptTemplates)
+      ? DEFAULT_SETTINGS.promptTemplates.map((entry) => ({ ...entry }))
+      : [],
+  )
   const isConnecting = ref(false)
   const connectionError = ref('')
   const connectionStatusText = ref('未连接')
@@ -147,6 +152,8 @@ export function useBridgeApp() {
   let workflowResyncAttemptIndex = 0
   let nextInstanceScanSequence = 0
   let instanceScanRefreshTimer = null
+  let promptSettingsPersistTimer = null
+  let applyingPromptState = false
 
   const connectionStore = createConnectionStore()
   const comfyResultStore = createResultStore()
@@ -206,6 +213,83 @@ export function useBridgeApp() {
   function clearDiagnosticLogs() {
     diagnosticEntries.value = []
     persistDiagnosticEntries()
+  }
+
+  function clonePromptTemplates(templates = []) {
+    return Array.isArray(templates)
+      ? templates.map((entry) => ({
+          name: String(entry?.name || '').trim(),
+          pos: String(entry?.pos || ''),
+          neg: String(entry?.neg || ''),
+          steps: Number(entry?.steps ?? DEFAULT_SETTINGS.steps),
+          cfg: Number(entry?.cfg ?? DEFAULT_SETTINGS.cfgScale),
+          seed: Number(entry?.seed ?? DEFAULT_SETTINGS.seed),
+        }))
+      : []
+  }
+
+  function loadLegacyPromptTemplates() {
+    try {
+      const raw = localStorage.getItem('comfyps_prompt_templates')
+      if (!raw) return []
+      const parsed = JSON.parse(raw)
+      return clonePromptTemplates(parsed)
+    } catch {
+      return []
+    }
+  }
+
+  function applyPromptStateFromSettings(settings = {}) {
+    applyingPromptState = true
+    try {
+      positivePrompt.value = String(settings?.positivePrompt || '')
+      negativePrompt.value = String(settings?.negativePrompt || '')
+      stepsValue.value = Number(settings?.steps ?? DEFAULT_SETTINGS.steps)
+      cfgScale.value = Number(settings?.cfgScale ?? DEFAULT_SETTINGS.cfgScale)
+      seedValue.value = Number(settings?.seed ?? DEFAULT_SETTINGS.seed)
+      promptTemplates.value = clonePromptTemplates(settings?.promptTemplates || [])
+    } finally {
+      applyingPromptState = false
+    }
+  }
+
+  function buildSettingsWithPromptState(baseSettings = {}, overrides = {}) {
+    return normalizePersistentSettingsSnapshot({
+      ...(baseSettings || {}),
+      positivePrompt: positivePrompt.value,
+      negativePrompt: negativePrompt.value,
+      steps: stepsValue.value,
+      cfgScale: cfgScale.value,
+      seed: seedValue.value,
+      promptTemplates: clonePromptTemplates(promptTemplates.value),
+      ...(overrides || {}),
+    })
+  }
+
+  function persistPromptState(syncHost = true) {
+    const mergedSettings = buildSettingsWithPromptState(settingsSnapshot.value)
+    settingsSnapshot.value = mergedSettings
+    try {
+      localStorage.setItem('comfyps_settings', JSON.stringify(mergedSettings))
+    } catch {
+      // ignore storage failures
+    }
+    if (syncHost) {
+      sendToHost(HOST_MESSAGE_TYPES.SYNC_SETTINGS, mergedSettings)
+    }
+  }
+
+  function schedulePromptStatePersist() {
+    if (applyingPromptState || !settingsBootstrapped) {
+      return
+    }
+    if (promptSettingsPersistTimer) {
+      clearTimeout(promptSettingsPersistTimer)
+    }
+    promptSettingsPersistTimer = setTimeout(() => {
+      promptSettingsPersistTimer = null
+      persistPromptState(true)
+    }, 180)
   }
 
   function formatDiagnosticTimestamp(timestamp) {
@@ -2143,7 +2227,7 @@ export function useBridgeApp() {
   }
 
   function handleSettingsChange(nextSettings = {}) {
-    const mergedSettings = normalizePersistentSettingsSnapshot({
+    const mergedSettings = buildSettingsWithPromptState({
       ...settingsSnapshot.value,
       ...(nextSettings || {}),
     })
@@ -2255,6 +2339,7 @@ export function useBridgeApp() {
       settingsSnapshot.value = effectiveSettings
       appMode.value = effectiveSettings.appMode || 'comfyui'
       selectedFrontendTarget.value = effectiveSettings.controlFrontendTarget || ''
+      applyPromptStateFromSettings(effectiveSettings)
 
       if (!hasHostSettings) {
         syncSettingsToHost(effectiveSettings)
@@ -2270,6 +2355,7 @@ export function useBridgeApp() {
 
     if (message.type === HOST_EVENT_TYPES.SETTINGS_UPDATED && message.payload) {
       settingsSnapshot.value = normalizePersistentSettingsSnapshot(message.payload || {})
+      applyPromptStateFromSettings(settingsSnapshot.value)
       try {
         localStorage.setItem('comfyps_settings', JSON.stringify(settingsSnapshot.value))
       } catch {
@@ -2680,9 +2766,16 @@ export function useBridgeApp() {
       const saved = localStorage.getItem('comfyps_settings')
       if (saved) {
         pendingLocalSettings = normalizePersistentSettingsSnapshot(JSON.parse(saved))
+        if (!pendingLocalSettings.promptTemplates?.length) {
+          pendingLocalSettings = normalizePersistentSettingsSnapshot({
+            ...pendingLocalSettings,
+            promptTemplates: loadLegacyPromptTemplates(),
+          })
+        }
         if (pendingLocalSettings?.appMode) {
           appMode.value = pendingLocalSettings.appMode
         }
+        applyPromptStateFromSettings(pendingLocalSettings)
       }
     } catch {
       pendingLocalSettings = null
@@ -2733,6 +2826,21 @@ export function useBridgeApp() {
       syncInstanceScanRefreshTimer()
     },
     { immediate: true },
+  )
+
+  watch(
+    [positivePrompt, negativePrompt, stepsValue, cfgScale, seedValue],
+    () => {
+      schedulePromptStatePersist()
+    },
+  )
+
+  watch(
+    promptTemplates,
+    () => {
+      schedulePromptStatePersist()
+    },
+    { deep: true },
   )
 
   watch(
@@ -2797,6 +2905,13 @@ export function useBridgeApp() {
     document.removeEventListener('click', onClickOutside)
     window.removeEventListener('focus', handleWindowFocus)
     document.removeEventListener('visibilitychange', handleVisibilityChange)
+    if (promptSettingsPersistTimer) {
+      clearTimeout(promptSettingsPersistTimer)
+      promptSettingsPersistTimer = null
+    }
+    if (settingsBootstrapped && !applyingPromptState) {
+      persistPromptState(true)
+    }
     clearConnectionRetryTimer()
     clearConnectionBadgeTimer()
     clearInstanceScanRefreshTimer()
@@ -2906,6 +3021,7 @@ export function useBridgeApp() {
     primaryActionLabel,
     primaryActionTitle,
     positivePrompt,
+    promptTemplates,
     realtimeOn,
     realtimeActionMode,
     referenceImages,

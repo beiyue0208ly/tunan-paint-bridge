@@ -57,26 +57,33 @@ class TuNanPSSenderNode(runtime_backend.TunanPSSender):
 
     @classmethod
     def INPUT_TYPES(cls):
-        return runtime_backend.TunanPSSender.INPUT_TYPES()
+        return {
+            "required": {
+                "\u56fe\u50cf": ("IMAGE",),
+                "\u56de\u8d34\u6a21\u5f0f": (["\u9009\u533a\u8fd8\u539f\u6a21\u5f0f", "\u6574\u56fe\u6a21\u5f0f"], {"default": "\u9009\u533a\u8fd8\u539f\u6a21\u5f0f"}),
+                "\u8fb9\u7f18\u6536\u7f29": ("INT", {"default": 0, "min": 0, "max": 128, "step": 1}),
+                "\u8fb9\u7f18\u67d4\u5316": ("INT", {"default": 0, "min": 0, "max": 128, "step": 1}),
+            },
+            "optional": {
+                "\u56fe\u50cf\u540d\u79f0": ("STRING", {"default": PRODUCT_NAME, "multiline": False}),
+            },
+        }
 
     def process_and_send(self, **kwargs):
         image = kwargs["\u56fe\u50cf"]
-        image_format = kwargs.get("\u56fe\u50cf\u683c\u5f0f", "PNG")
         return_mode = kwargs.get("\u56de\u8d34\u6a21\u5f0f", "\u9009\u533a\u8fd8\u539f\u6a21\u5f0f")
         edge_shrink = kwargs.get("\u8fb9\u7f18\u6536\u7f29", 0)
         edge_feather = kwargs.get("\u8fb9\u7f18\u67d4\u5316", 0)
         image_name = kwargs.get("\u56fe\u50cf\u540d\u79f0", PRODUCT_NAME)
-        jpeg_quality = kwargs.get("JPEG\u8d28\u91cf", 90)
-        png_compression = kwargs.get("PNG\u538b\u7f29", 6)
         return super().process_and_send(
             image,
-            image_format,
+            "PNG",
             return_mode,
             edge_shrink,
             edge_feather,
             image_name,
-            jpeg_quality,
-            png_compression,
+            90,
+            6,
         )
 
 

@@ -32,12 +32,13 @@
                   选择快捷预设...
                 </li>
                 <li
-                  v-for="(tpl, idx) in templates"
-                  :key="tpl.name + idx"
-                  @click="chooseTemplate(idx)"
-                  :class="{ active: selectedTemplate === idx }"
+                  v-for="tpl in mergedTemplates"
+                  :key="tpl.id"
+                  @click="chooseTemplate(tpl.id)"
+                  :class="{ active: selectedTemplate === tpl.id }"
                 >
-                  {{ tpl.name }}
+                  <span>{{ tpl.name }}</span>
+                  <span v-if="tpl.builtIn" class="builtin-chip">系统</span>
                 </li>
               </ul>
             </Transition>
@@ -53,9 +54,9 @@
             </button>
             <button
               class="action-btn icon-btn danger"
-              :disabled="selectedTemplate === ''"
+              :disabled="!canDeleteSelectedTemplate"
               @click="deleteTemplate"
-              title="删除当前预设"
+              :title="deleteTemplateTitle"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="3 6 5 6 21 6"></polyline>
@@ -133,16 +134,59 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+
+const SYSTEM_TEMPLATES = Object.freeze([
+  {
+    id: 'system_universal_negative',
+    name: '通用负面',
+    builtIn: true,
+    neg: '(worst quality, low quality:1.4), normal quality, lowres, jpeg artifacts, text, signature, watermark, username, blurry, cropped, error, flat coloring, dull colors',
+  },
+  {
+    id: 'system_character_negative',
+    name: '人物负面',
+    builtIn: true,
+    neg: '(bad anatomy, deformed:1.2), ugly, (bad hands, missing fingers, extra digit, fewer digits:1.2), poorly drawn face, poorly drawn hands, mutated hands, long neck, cross-eyed, extra limbs, bad proportions, disfigured',
+  },
+  {
+    id: 'system_scene_negative',
+    name: '场景负面',
+    builtIn: true,
+    neg: 'bad perspective, distorted architecture, chaotic composition, illogical structure, floating objects, disconnected elements, confusing scale, flat background, out of frame',
+  },
+  {
+    id: 'system_universal_positive',
+    name: '通用正面',
+    builtIn: true,
+    pos: '(masterpiece:1.2), (best quality), highres, ultra-detailed, (intricate details:1.1), 8k, absurdres, perfect lighting, masterful composition, professional artwork',
+  },
+  {
+    id: 'system_character_positive',
+    name: '人体结构正面',
+    builtIn: true,
+    pos: 'anatomically correct, well-proportioned body, (detailed beautiful face:1.1), perfect hands, highly detailed eyes, clear facial features, dynamic pose, expressive, intricate skin texture',
+  },
+  {
+    id: 'system_scene_positive',
+    name: '场景正面',
+    builtIn: true,
+    pos: 'cinematic lighting, volumetric lighting, deep depth of field, (atmospheric:1.1), expansive view, intricate environment, highly detailed background, perfect perspective, epic scale',
+  },
+])
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
   isLinked: { type: Boolean, default: false },
   positive: { type: String, default: '' },
-  negative: { type: String, default: 'ugly, blurry, deformed, bad anatomy, watermark, text' },
+  negative: { type: String, default: '' },
   steps: { type: Number, default: 20 },
   cfg: { type: Number, default: 7.0 },
   seed: { type: Number, default: -1 },
+  templates: {
+    type: Array,
+    default: () => [],
+  },
 })
 
 const emit = defineEmits([
@@ -152,6 +196,7 @@ const emit = defineEmits([
   'update:steps',
   'update:cfg',
   'update:seed',
+  'update:templates',
 ])
 
 const positive = computed({
@@ -160,7 +205,7 @@ const positive = computed({
 })
 
 const negative = computed({
-  get: () => props.negative ?? 'ugly, blurry, deformed, bad anatomy, watermark, text',
+  get: () => props.negative ?? '',
   set: (value) => emit('update:negative', value),
 })
 
@@ -170,7 +215,7 @@ const steps = computed({
 })
 
 const cfg = computed({
-  get: () => props.cfg ?? 7.0,
+  get: () => props.cfg ?? 7,
   set: (value) => emit('update:cfg', Number(value ?? 7)),
 })
 
@@ -179,9 +224,15 @@ const seed = computed({
   set: (value) => emit('update:seed', Number(value ?? -1)),
 })
 
-const templates = ref([
-  { name: '默认人像', pos: '1girl, masterpiece, best quality, ultra-detailed', neg: 'ugly, blurry, deformed', steps: 25, cfg: 7.0 },
-  { name: '风景插画', pos: 'scenery, mountain, sunset, beautiful lighting', neg: 'lowres, bad lighting', steps: 20, cfg: 6.5 },
+const customTemplates = computed(() => (Array.isArray(props.templates) ? props.templates : []))
+
+const mergedTemplates = computed(() => [
+  ...SYSTEM_TEMPLATES,
+  ...customTemplates.value.map((template, index) => ({
+    ...template,
+    id: `custom_${index}`,
+    builtIn: false,
+  })),
 ])
 
 const selectedTemplate = ref('')
@@ -190,17 +241,33 @@ const showSaveDialog = ref(false)
 const newTemplateName = ref('')
 const dropdownRef = ref(null)
 
+const selectedTemplateEntry = computed(() => {
+  if (!selectedTemplate.value) return null
+  return mergedTemplates.value.find((entry) => entry.id === selectedTemplate.value) || null
+})
+
+const canDeleteSelectedTemplate = computed(
+  () => Boolean(selectedTemplateEntry.value && !selectedTemplateEntry.value.builtIn),
+)
+
+const deleteTemplateTitle = computed(() => {
+  if (!selectedTemplateEntry.value) {
+    return '请选择一个自定义模板'
+  }
+  return selectedTemplateEntry.value.builtIn ? '系统模板不能删除' : '删除当前预设'
+})
+
 const currentTemplateName = computed(() => {
   if (selectedTemplate.value === '' || selectedTemplate.value == null) return '选择快捷预设'
-  return templates.value[selectedTemplate.value]?.name || '选择快捷预设'
+  return selectedTemplateEntry.value?.name || '选择快捷预设'
 })
 
 function toggleDropdown() {
   isDropdownOpen.value = !isDropdownOpen.value
 }
 
-function chooseTemplate(idx) {
-  selectedTemplate.value = idx
+function chooseTemplate(id) {
+  selectedTemplate.value = id
   isDropdownOpen.value = false
   applyTemplate()
 }
@@ -218,16 +285,6 @@ function handleClickOutside(event) {
 
 onMounted(() => {
   document.addEventListener('click', handleClickOutside)
-
-  const savedTpl = localStorage.getItem('comfyps_prompt_templates')
-  if (!savedTpl) return
-
-  try {
-    const parsed = JSON.parse(savedTpl)
-    if (Array.isArray(parsed) && parsed.length) {
-      templates.value = parsed
-    }
-  } catch {}
 })
 
 onBeforeUnmount(() => {
@@ -235,44 +292,67 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  templates,
-  (newVal) => {
-    localStorage.setItem('comfyps_prompt_templates', JSON.stringify(newVal))
+  mergedTemplates,
+  (nextTemplates) => {
+    if (selectedTemplate.value === '') return
+    if (!nextTemplates.some((entry) => entry.id === selectedTemplate.value)) {
+      selectedTemplate.value = ''
+    }
   },
-  { deep: true }
+  { deep: true },
 )
 
 function applyTemplate() {
   if (selectedTemplate.value === '') return
-  const tpl = templates.value[selectedTemplate.value]
+  const tpl = selectedTemplateEntry.value
   if (!tpl) return
 
-  if (tpl.pos) positive.value = tpl.pos
-  if (tpl.neg) negative.value = tpl.neg
-  if (tpl.steps) steps.value = tpl.steps
-  if (tpl.cfg) cfg.value = tpl.cfg
+  if (tpl.builtIn) {
+    if (typeof tpl.pos === 'string' && tpl.pos.trim()) {
+      positive.value = tpl.pos
+    }
+    if (typeof tpl.neg === 'string' && tpl.neg.trim()) {
+      negative.value = tpl.neg
+    }
+    return
+  }
+
+  positive.value = tpl.pos || ''
+  negative.value = tpl.neg || ''
+  steps.value = tpl.steps ?? 20
+  cfg.value = tpl.cfg ?? 7
+  seed.value = tpl.seed ?? -1
 }
 
 function saveTemplate() {
   const name = newTemplateName.value.trim()
   if (!name) return
 
-  templates.value.push({
+  const nextTemplates = [...customTemplates.value]
+  nextTemplates.push({
     name,
     pos: positive.value,
     neg: negative.value,
     steps: steps.value,
     cfg: cfg.value,
+    seed: seed.value,
   })
 
-  selectedTemplate.value = templates.value.length - 1
+  emit('update:templates', nextTemplates)
+  selectedTemplate.value = `custom_${nextTemplates.length - 1}`
   newTemplateName.value = ''
   showSaveDialog.value = false
 }
 
 function deleteTemplate() {
-  if (selectedTemplate.value === '') return
-  templates.value.splice(selectedTemplate.value, 1)
+  if (!canDeleteSelectedTemplate.value) return
+  const matched = /^custom_(\d+)$/.exec(String(selectedTemplate.value || ''))
+  if (!matched) return
+  const targetIndex = Number(matched[1])
+  emit(
+    'update:templates',
+    customTemplates.value.filter((_, index) => index !== targetIndex),
+  )
   selectedTemplate.value = ''
 }
 </script>
@@ -398,6 +478,10 @@ function deleteTemplate() {
 }
 
 .dropdown-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 8px 10px;
   border-radius: 6px;
   color: #ddd;
@@ -409,6 +493,15 @@ function deleteTemplate() {
 .dropdown-list li.active {
   background: rgba(82, 139, 255, 0.16);
   color: #fff;
+}
+
+.builtin-chip {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(82, 139, 255, 0.16);
+  color: #9dc0ff;
+  font-size: 10px;
 }
 
 .template-actions {
@@ -581,6 +674,7 @@ function deleteTemplate() {
 .prompt-input::-webkit-scrollbar {
   width: 6px;
 }
+
 .prompt-input::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.15);
   border-radius: 4px;

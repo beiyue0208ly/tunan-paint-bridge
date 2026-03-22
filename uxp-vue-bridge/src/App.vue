@@ -44,6 +44,7 @@
       v-model:steps="stepsValue"
       v-model:cfg="cfgScale"
       v-model:seed="seedValue"
+      v-model:templates="promptTemplates"
       :is-linked="isConnected"
     />
     <WorkflowBrowser
@@ -402,12 +403,13 @@ const {
   mainMeta,
   negativePrompt,
   onDenoise,
-  openedWorkflowTabs,
-  openWorkflowBrowser,
-  primaryActionDisplayLabel,
-  primaryActionDisplayTitle,
-  positivePrompt,
-  realtimeOn,
+	  openedWorkflowTabs,
+	  openWorkflowBrowser,
+	  primaryActionDisplayLabel,
+	  primaryActionDisplayTitle,
+	  positivePrompt,
+	  promptTemplates,
+	  realtimeOn,
   realtimeActionMode,
   referenceImages,
   referencePanelExpanded,

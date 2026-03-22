@@ -1,7 +1,7 @@
 {
   "id": "com.tunan.paintbridge-vue",
   "name": "图南画桥",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "Vue 3 WebView-based UXP panel for TuNan Paint Bridge",
   "author": "tunan",
   "main": "./index.html",

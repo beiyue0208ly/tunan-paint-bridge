@@ -202,6 +202,12 @@ export const DEFAULT_SETTINGS = {
   returnLayerType: 'smartObject',
   returnLayerNaming: 'source',
   jpegQuality: 90,
+  positivePrompt: '',
+  negativePrompt: '',
+  steps: 20,
+  cfgScale: 7,
+  seed: -1,
+  promptTemplates: [],
   showNotifications: true,
   notificationDuration: 3,
   apiReferenceSizeLimit: 'original',
@@ -212,6 +218,27 @@ export const DEFAULT_SETTINGS = {
   apiBaseUrl: '',
   apiModel: '',
   controlFrontendTarget: '',
+}
+
+function normalizePromptTemplateEntry(entry = {}, index = 0) {
+  const nextEntry = entry && typeof entry === 'object' ? entry : {}
+  const name = String(nextEntry.name || '').trim() || `模板 ${index + 1}`
+
+  return {
+    name,
+    pos: String(nextEntry.pos ?? nextEntry.positive ?? nextEntry.positivePrompt ?? '').trim(),
+    neg: String(nextEntry.neg ?? nextEntry.negative ?? nextEntry.negativePrompt ?? '').trim(),
+    steps: normalizeNumber(nextEntry.steps, DEFAULT_SETTINGS.steps, { min: 1, max: 150 }),
+    cfg: normalizeNumber(nextEntry.cfg ?? nextEntry.cfgScale, DEFAULT_SETTINGS.cfgScale, { min: 1, max: 30 }),
+    seed: normalizeNumber(nextEntry.seed, DEFAULT_SETTINGS.seed),
+  }
+}
+
+function normalizePromptTemplates(rawSettings = {}) {
+  const sourceTemplates = Array.isArray(rawSettings.promptTemplates) ? rawSettings.promptTemplates : []
+  return sourceTemplates
+    .map((entry, index) => normalizePromptTemplateEntry(entry, index))
+    .filter((entry) => entry.name)
 }
 
 function normalizeNumber(value, fallback, { min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY } = {}) {
@@ -339,6 +366,15 @@ export function normalizeSettingsSnapshot(rawSettings = {}) {
     min: 0,
     max: 4096,
   })
+  nextSettings.steps = normalizeNumber(nextSettings.steps, DEFAULT_SETTINGS.steps, {
+    min: 1,
+    max: 150,
+  })
+  nextSettings.cfgScale = normalizeNumber(nextSettings.cfgScale, DEFAULT_SETTINGS.cfgScale, {
+    min: 1,
+    max: 30,
+  })
+  nextSettings.seed = normalizeNumber(nextSettings.seed, DEFAULT_SETTINGS.seed)
   nextSettings.jpegQuality = normalizeNumber(nextSettings.jpegQuality, DEFAULT_SETTINGS.jpegQuality, {
     min: 1,
     max: 100,
@@ -376,6 +412,9 @@ export function normalizeSettingsSnapshot(rawSettings = {}) {
   nextSettings.imageFormat = nextSettings.imageFormat === 'jpg' ? 'jpg' : 'png'
   nextSettings.returnLayerType = normalizeReturnLayerType(rawSettings)
   nextSettings.returnLayerNaming = normalizeReturnLayerNaming(rawSettings)
+  nextSettings.positivePrompt = String(nextSettings.positivePrompt || '')
+  nextSettings.negativePrompt = String(nextSettings.negativePrompt || '')
+  nextSettings.promptTemplates = normalizePromptTemplates(rawSettings)
   nextSettings.autoConnect = nextSettings.autoConnect !== false
   nextSettings.useSelection = nextSettings.useSelection !== false
   nextSettings.showNotifications = nextSettings.showNotifications !== false

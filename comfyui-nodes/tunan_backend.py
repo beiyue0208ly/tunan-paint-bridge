@@ -152,6 +152,43 @@ class TuNanBackendPSSenderNode(node_runtime.TunanPSSender):
         )
 
 
+def _backend_sender_png_only_input_types(cls):
+    return {
+        "required": {
+            "鍥惧儚": ("IMAGE",),
+            "鍥炶创妯″紡": (["閫夊尯杩樺師妯″紡", "鏁村浘妯″紡"], {"default": "閫夊尯杩樺師妯″紡"}),
+            "杈圭紭鏀剁缉": ("INT", {"default": 0, "min": 0, "max": 128, "step": 1}),
+            "杈圭紭鏌斿寲": ("INT", {"default": 0, "min": 0, "max": 128, "step": 1}),
+        },
+        "optional": {
+            "鍥惧儚鍚嶇О": ("STRING", {"default": "鍥惧崡鐢绘ˉ", "multiline": False}),
+        },
+    }
+
+
+def _backend_sender_process_and_send_png_only(self, **kwargs):
+    image = kwargs["鍥惧儚"]
+    return_mode = kwargs.get("鍥炶创妯″紡", "閫夊尯杩樺師妯″紡")
+    edge_shrink = kwargs.get("杈圭紭鏀剁缉", 0)
+    edge_feather = kwargs.get("杈圭紭鏌斿寲", 0)
+    image_name = kwargs.get("鍥惧儚鍚嶇О", "鍥惧崡鐢绘ˉ")
+    return node_runtime.TunanPSSender.process_and_send(
+        self,
+        image,
+        "PNG",
+        return_mode,
+        edge_shrink,
+        edge_feather,
+        image_name,
+        90,
+        6,
+    )
+
+
+TuNanBackendPSSenderNode.INPUT_TYPES = classmethod(_backend_sender_png_only_input_types)
+TuNanBackendPSSenderNode.process_and_send = _backend_sender_process_and_send_png_only
+
+
 bridge_route_exports = bridge_routes.register_bridge_routes(
     PromptServer,
     resource_manager,

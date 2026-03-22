@@ -1,6 +1,6 @@
 [project]
 name = "tunan-paint-bridge-nodes"
-version = "1.0.11"
+version = "1.0.12"
 license = { file = "LICENSE" }
 description = "ComfyUI bridge nodes for TuNan Paint Bridge. Requires the Photoshop plugin (.ccx)."
 requires-python = ">=3.8"
