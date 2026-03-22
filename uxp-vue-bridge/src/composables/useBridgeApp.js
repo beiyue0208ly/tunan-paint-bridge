@@ -47,6 +47,11 @@ export function useBridgeApp() {
   const connectionPhase = ref('disconnected')
   const connectionBadgePhase = ref('disconnected')
   const connectionBadgeOverrideText = ref('')
+  const detectedComfyInstances = ref([])
+  const isScanningComfyInstances = ref(false)
+  const instanceScanStatusText = ref('')
+  const pendingInstanceScanContext = ref(null)
+  const shuttingDownInstanceIds = ref([])
   const taskErrorMessage = ref('')
   const taskErrorTimer = ref(null)
   const dropdownRef = ref(null)
@@ -77,6 +82,8 @@ export function useBridgeApp() {
   let settingsBootstrapped = false
   let lastConnectionBadgePressAt = 0
   let workflowResyncAttemptIndex = 0
+  let nextInstanceScanSequence = 0
+  let instanceScanRefreshTimer = null
 
   const connectionStore = createConnectionStore()
   const comfyResultStore = createResultStore()
@@ -362,11 +369,91 @@ export function useBridgeApp() {
     if (connectionPhase.value === 'failed') return '点击重试连接'
     return '点击连接'
   })
+  const activeConnectionEndpointText = computed(() => {
+    if (!connectionStore.isConnected.value) return ''
+    const host = String(connectionStore.connectionMeta.value?.host || '').trim()
+    const port = String(connectionStore.connectionMeta.value?.port || '').trim()
+    if (!host || !port) return ''
+    return `${host}:${port}`
+  })
+  const connectedDetectedInstance = computed(() => {
+    const endpoint = activeConnectionEndpointText.value
+    if (!endpoint) return null
+
+    const existing = detectedComfyInstances.value.find((instance) => instance.id === endpoint)
+    if (existing) {
+      return {
+        ...existing,
+        hasActiveFrontend: true,
+      }
+    }
+
+    const [host = '', port = ''] = endpoint.split(':')
+    if (!host || !port) return null
+
+    const primarySession = frontendSessions.value[0] || null
+    const primaryKind = String(primarySession?.kind || activeFrontend.value?.kind || 'desktop').trim()
+    const primaryTabName = String(
+      primarySession?.current_tab_name ||
+        currentWorkflow.value ||
+        activeFrontend.value?.currentTabName ||
+        activeFrontend.value?.tabName ||
+        '',
+    ).trim()
+    const kindLabel =
+      primaryKind === 'browser'
+        ? '网页端'
+        : primaryKind === 'desktop'
+          ? '桌面端'
+          : '当前前端'
+
+    return {
+      id: endpoint,
+      host,
+      port,
+      bridgeVersion: '',
+      service: 'TuNanPaintBridge',
+      hasActiveFrontend: true,
+      frontendLabel: primaryTabName ? `${kindLabel} · ${primaryTabName}` : kindLabel,
+      psConnected: true,
+      websocketClients: 1,
+      statusText: 'Photoshop 已连接',
+    }
+  })
+  const visibleDetectedComfyInstances = computed(() =>
+    {
+      const activeInstances = detectedComfyInstances.value.filter((instance) => instance.hasActiveFrontend)
+      const connectedInstance = connectedDetectedInstance.value
+
+      if (connectedInstance && !activeInstances.some((instance) => instance.id === connectedInstance.id)) {
+        return [connectedInstance, ...activeInstances]
+      }
+
+      return activeInstances
+    },
+  )
+  const inactiveDetectedComfyInstances = computed(() => {
+    const activeIds = new Set(visibleDetectedComfyInstances.value.map((instance) => instance.id))
+    const currentEndpoint = activeConnectionEndpointText.value
+
+    return detectedComfyInstances.value
+      .filter((instance) => !activeIds.has(instance.id))
+      .sort((left, right) => {
+        const leftCurrent = left.id === currentEndpoint
+        const rightCurrent = right.id === currentEndpoint
+        if (leftCurrent !== rightCurrent) {
+          return leftCurrent ? -1 : 1
+        }
+        return Number(left.port || 0) - Number(right.port || 0)
+      })
+  })
   // Keep retrying long enough for "plugin first, ComfyUI later" startup.
   const AUTO_CONNECT_RETRY_DELAYS = [1200, 2500, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000]
   const WORKFLOW_RESYNC_DELAYS = [260, 720, 1600, 3000, 5000]
   const USER_STOP_GRACE_MS = 6000
   const TRANSIENT_CONNECTION_BADGE_DELAY_MS = 420
+  const INSTANCE_SCAN_REFRESH_MS = 3000
+  const WORKFLOW_SYNC_FALLBACK_SCAN_ATTEMPT = 2
 
   function clearConnectionRetryTimer() {
     if (connectionRetryTimer.value) {
@@ -380,6 +467,17 @@ export function useBridgeApp() {
       clearTimeout(connectionBadgeTimer.value)
       connectionBadgeTimer.value = null
     }
+  }
+
+  function clearInstanceScanRefreshTimer() {
+    if (instanceScanRefreshTimer) {
+      clearInterval(instanceScanRefreshTimer)
+      instanceScanRefreshTimer = null
+    }
+  }
+
+  function syncInstanceScanRefreshTimer() {
+    clearInstanceScanRefreshTimer()
   }
 
   function clearWorkflowResyncTimer() {
@@ -411,6 +509,11 @@ export function useBridgeApp() {
       settingsActiveTab.value = tab
     }
     showSettings.value = true
+    syncInstanceScanRefreshTimer()
+    const nextTab = tab || settingsActiveTab.value
+    if (appMode.value === 'comfyui' && nextTab === 'connection' && !connectionStore.isConnected.value) {
+      requestComfyInstanceScan(settingsSnapshot.value, { auto: false })
+    }
   }
 
   function clearApiTaskStageTimer() {
@@ -603,6 +706,16 @@ export function useBridgeApp() {
     }
   }
 
+  function clearInstanceScanState(options = {}) {
+    pendingInstanceScanContext.value = null
+    isScanningComfyInstances.value = false
+
+    if (options.clearResults) {
+      detectedComfyInstances.value = []
+      instanceScanStatusText.value = ''
+    }
+  }
+
   function setConnectionPhase(nextPhase, options = {}) {
     connectionPhase.value = nextPhase
     isConnecting.value = nextPhase === 'connecting'
@@ -692,6 +805,20 @@ export function useBridgeApp() {
       }
 
       workflowResyncAttemptIndex += 1
+
+      if (workflowResyncAttemptIndex >= WORKFLOW_SYNC_FALLBACK_SCAN_ATTEMPT) {
+        requestComfyInstanceScan(
+          {
+            ...settingsSnapshot.value,
+            ...connectionStore.connectionMeta.value,
+          },
+          {
+            auto: false,
+            reason: 'workflow-sync',
+          },
+        )
+      }
+
       refreshWorkflowState()
     }, delay)
   }
@@ -703,7 +830,243 @@ export function useBridgeApp() {
     })
   }
 
+  function normalizeDetectedComfyInstances(instances = []) {
+    if (!Array.isArray(instances)) return []
+
+    return instances
+      .map((instance) => {
+        const host = String(instance?.host || '').trim()
+        const port = String(instance?.port || '').trim()
+        if (!host || !port) return null
+
+        return {
+          id: `${host}:${port}`,
+          host,
+          port,
+          bridgeVersion: String(instance?.bridgeVersion || instance?.version || '').trim(),
+          service: String(instance?.service || 'TuNanPaintBridge').trim() || 'TuNanPaintBridge',
+          hasActiveFrontend: Boolean(instance?.hasActiveFrontend),
+          frontendLabel: String(instance?.frontendLabel || '').trim(),
+          psConnected: Boolean(instance?.psConnected),
+          websocketClients: Math.max(0, Number(instance?.websocketClients || 0) || 0),
+          statusText: String(instance?.statusText || '').trim(),
+        }
+      })
+      .filter(Boolean)
+  }
+
+  function buildDetectedInstancesStatusText(instances = []) {
+    const activeFrontendInstances = instances.filter((instance) => instance.hasActiveFrontend)
+    const inactiveInstances = instances.filter((instance) => !instance.hasActiveFrontend)
+
+    if (!activeFrontendInstances.length) {
+      if (inactiveInstances.length > 0) {
+        return `未发现活动中的 ComfyUI 前端，检测到 ${inactiveInstances.length} 个后台残留`
+      }
+      return '未发现活动中的 ComfyUI 前端'
+    }
+
+    if (activeFrontendInstances.length === 1) {
+      const onlyInstance = activeFrontendInstances[0]
+      return inactiveInstances.length
+        ? `发现 1 个活动前端：${onlyInstance.host}:${onlyInstance.port}，另外有 ${inactiveInstances.length} 个后台残留`
+        : `发现 1 个活动前端：${onlyInstance.host}:${onlyInstance.port}`
+    }
+
+    return inactiveInstances.length
+      ? `发现 ${activeFrontendInstances.length} 个活动前端，另外有 ${inactiveInstances.length} 个后台残留`
+      : `发现 ${activeFrontendInstances.length} 个活动前端，请选择要连接的端口`
+  }
+
+  function syncDetectedComfyInstances(instances = [], options = {}) {
+    const normalizedInstances = normalizeDetectedComfyInstances(instances)
+    detectedComfyInstances.value = normalizedInstances
+
+    if (options.preserveStatusText) {
+      return normalizedInstances
+    }
+
+    instanceScanStatusText.value = buildDetectedInstancesStatusText(normalizedInstances)
+    return normalizedInstances
+  }
+
+  function pickPreferredAutoConnectInstance(instances = []) {
+    const activeFrontendInstances = instances.filter((instance) => instance.hasActiveFrontend)
+    if (activeFrontendInstances.length === 1) {
+      return activeFrontendInstances[0]
+    }
+
+    return null
+  }
+
+  function rememberSuccessfulConnection(meta = {}) {
+    const host = String(meta?.host || '').trim()
+    const port = String(meta?.port || '').trim()
+    if (!host || !port || appMode.value !== 'comfyui') return
+
+    if (host === String(settingsSnapshot.value.host || '').trim() && port === String(settingsSnapshot.value.port || '').trim()) {
+      return
+    }
+
+    syncSettingsToHost({
+      ...settingsSnapshot.value,
+      host,
+      port,
+    })
+  }
+
+  function requestComfyInstanceScan(config = {}, options = {}) {
+    if (isScanningComfyInstances.value) {
+      return
+    }
+
+    const mergedConfig = mergeConnectionConfig(config)
+    const scanId = `scan_${Date.now()}_${nextInstanceScanSequence.toString(36)}`
+    nextInstanceScanSequence += 1
+
+    pendingInstanceScanContext.value = {
+      scanId,
+      auto: options.auto === true,
+      reason: String(options.reason || '').trim() || 'manual',
+      config: mergedConfig,
+      lastError: String(options.lastError || '').trim(),
+    }
+    isScanningComfyInstances.value = true
+
+    if (options.auto) {
+      setConnectionPhase('waiting', {
+        error: options.lastError || '',
+        statusText: '正在扫描本机 ComfyUI...',
+        badgeText: '扫描中...',
+      })
+    } else {
+      instanceScanStatusText.value = '正在扫描本机 ComfyUI...'
+    }
+
+    const sent = sendToHost(HOST_MESSAGE_TYPES.SCAN_COMFYUI_INSTANCES, {
+      ...mergedConfig,
+      scanId,
+    })
+
+    if (sent) {
+      return
+    }
+
+    pendingInstanceScanContext.value = null
+    isScanningComfyInstances.value = false
+
+    if (options.auto) {
+      scheduleNextAutoConnectRetry('无法扫描本机 ComfyUI 实例，请重新打开插件面板')
+      return
+    }
+
+    instanceScanStatusText.value = '无法发送扫描命令，请重新打开插件面板'
+  }
+
+  function handleAutoConnectDiscoveryResult(instances = [], context = {}) {
+    const autoSelectedInstance = pickPreferredAutoConnectInstance(instances)
+    if (autoSelectedInstance) {
+      const requestedHost = String(context.config?.host || '').trim()
+      const requestedPort = String(context.config?.port || '').trim()
+      const sameAsRequested =
+        autoSelectedInstance.host === requestedHost && autoSelectedInstance.port === requestedPort
+
+      if (sameAsRequested) {
+        scheduleNextAutoConnectRetry(
+          context.lastError || `已发现 ${autoSelectedInstance.host}:${autoSelectedInstance.port}，正在等待桥接就绪...`,
+        )
+        return
+      }
+
+      const nextConfig = mergeConnectionConfig({
+        ...context.config,
+        host: autoSelectedInstance.host,
+        port: autoSelectedInstance.port,
+      })
+      autoConnectState.value = {
+        ...autoConnectState.value,
+        config: nextConfig,
+      }
+      const autoConnectReason =
+        instances.length > 1 && autoSelectedInstance.hasActiveFrontend
+          ? `发现当前活动的 ComfyUI，正在连接 ${autoSelectedInstance.host}:${autoSelectedInstance.port}...`
+          : `发现实例，正在连接 ${autoSelectedInstance.host}:${autoSelectedInstance.port}...`
+      scheduleConnectToConfig(nextConfig, {
+        auto: true,
+        statusText: autoConnectReason,
+        badgeText: '自动连接',
+      })
+      return
+    }
+
+    const activeFrontendInstances = instances.filter((instance) => instance.hasActiveFrontend)
+
+    if (activeFrontendInstances.length > 1) {
+      resetAutoConnectState()
+      const portsText = activeFrontendInstances.map((instance) => instance.port).join('、')
+      setConnectionPhase('failed', {
+        error: `自动连接发现多个活动中的 ComfyUI 前端（${portsText}），请在设置里选择一个端口。`,
+        statusText: '发现多个活动前端，请在设置中选择',
+        badgeText: '多个实例',
+      })
+      return
+    }
+
+    scheduleNextAutoConnectRetry(context.lastError || '未发现活动中的 ComfyUI 前端')
+  }
+
+  function handleWorkflowSyncDiscoveryResult(instances = [], context = {}) {
+    if (!needsWorkflowResync()) {
+      return
+    }
+
+    const activeFrontendInstances = instances.filter((instance) => instance.hasActiveFrontend)
+    const currentEndpoint = activeConnectionEndpointText.value
+
+    if (activeFrontendInstances.length === 1) {
+      const activeInstance = activeFrontendInstances[0]
+      if (activeInstance.id === currentEndpoint) {
+        setConnectionPhase('waiting', {
+          error: '',
+          statusText: `正在同步工作流：${activeInstance.host}:${activeInstance.port}`,
+          badgeText: '同步工作流...',
+        })
+        return
+      }
+
+      const nextConfig = mergeConnectionConfig({
+        ...context.config,
+        host: activeInstance.host,
+        port: activeInstance.port,
+      })
+      scheduleConnectToConfig(nextConfig, {
+        auto: false,
+        statusText: `当前端口没有活动前端，正在切换到 ${activeInstance.host}:${activeInstance.port}...`,
+        badgeText: '切换中...',
+      })
+      return
+    }
+
+    if (activeFrontendInstances.length > 1) {
+      setConnectionPhase('waiting', {
+        error: '',
+        statusText: '发现多个活动前端，请在设置中选择',
+        badgeText: '多个实例',
+      })
+      return
+    }
+
+    if (currentEndpoint) {
+      setConnectionPhase('waiting', {
+        error: '',
+        statusText: `当前连接 ${currentEndpoint} 没有活动前端，等待 ComfyUI 前端恢复...`,
+        badgeText: '等待前端',
+      })
+    }
+  }
+
   function scheduleNextAutoConnectRetry(lastError = '') {
+    clearInstanceScanState()
     const state = autoConnectState.value
     if (!state.active || !state.config) {
       setConnectionPhase('failed', { error: lastError || connectionError.value })
@@ -745,8 +1108,47 @@ export function useBridgeApp() {
     }
   }
 
+  function scheduleConnectToConfig(config = {}, options = {}) {
+    const mergedConfig = mergeConnectionConfig(config)
+    const requestedHost = String(mergedConfig.host || '').trim()
+    const requestedPort = String(mergedConfig.port || '').trim()
+    const currentHost = String(connectionStore.connectionMeta.value?.host || '').trim()
+    const currentPort = String(connectionStore.connectionMeta.value?.port || '').trim()
+    const targetChanged = requestedHost !== currentHost || requestedPort !== currentPort
+    const hasLiveOrPendingConnection =
+      connectionStore.isConnected.value ||
+      connectionPhase.value === 'connected' ||
+      connectionPhase.value === 'connecting' ||
+      connectionPhase.value === 'waiting'
+
+    if (targetChanged && hasLiveOrPendingConnection) {
+      pendingConnectCancellation.value = false
+      clearConnectionRetryTimer()
+      setConnectionPhase('connecting', {
+        error: '',
+        statusText: options.statusText || `正在切换到 ${requestedHost}:${requestedPort}...`,
+        badgeText: options.badgeText || '切换中...',
+      })
+      sendToHost(HOST_MESSAGE_TYPES.DISCONNECT_COMFYUI, {
+        ...settingsSnapshot.value,
+      })
+      connectionRetryTimer.value = setTimeout(() => {
+        connectionRetryTimer.value = null
+        performConnectAttempt(mergedConfig, { auto: options.auto === true })
+      }, 220)
+      return
+    }
+
+    if (!targetChanged && connectionPhase.value === 'connected') {
+      return
+    }
+
+    performConnectAttempt(mergedConfig, { auto: options.auto === true })
+  }
+
   function beginAutoConnect(config = {}) {
     const mergedConfig = mergeConnectionConfig(config)
+    clearInstanceScanState()
     autoConnectState.value = {
       active: true,
       config: mergedConfig,
@@ -758,6 +1160,7 @@ export function useBridgeApp() {
   function cancelConnectionFlow() {
     pendingConnectCancellation.value = true
     resetAutoConnectState()
+    clearInstanceScanState()
     setConnectionPhase('disconnected', { error: '' })
     connectionStatusText.value = '未连接'
     sendToHost(HOST_MESSAGE_TYPES.DISCONNECT_COMFYUI, {
@@ -770,6 +1173,9 @@ export function useBridgeApp() {
 
     if (connected) {
       resetAutoConnectState()
+      clearInstanceScanState()
+      instanceScanStatusText.value = ''
+      rememberSuccessfulConnection(meta)
       setConnectionPhase('connected', {
         meta,
         statusText: options.statusText || '',
@@ -798,6 +1204,9 @@ export function useBridgeApp() {
   function syncConnectedPhase(meta = {}, options = {}) {
     connectionStore.setConnected(true, meta)
     resetAutoConnectState()
+    clearInstanceScanState()
+    instanceScanStatusText.value = ''
+    rememberSuccessfulConnection(meta)
 
     if (hasResolvedWorkflowSync()) {
       setConnectionPhase('connected', {
@@ -1327,8 +1736,56 @@ export function useBridgeApp() {
   }
 
   function handleConnect(config) {
+    const mergedConfig = mergeConnectionConfig(config || {})
+
     resetAutoConnectState()
-    performConnectAttempt(config || {}, { auto: false })
+    clearInstanceScanState()
+    scheduleConnectToConfig(mergedConfig, {
+      auto: false,
+      statusText: `正在切换到 ${mergedConfig.host}:${mergedConfig.port}...`,
+      badgeText: '切换中...',
+    })
+  }
+
+  function handleScanInstances(config) {
+    requestComfyInstanceScan(config || settingsSnapshot.value, { auto: false })
+  }
+
+  function markInstanceShutdownState(instanceId, shuttingDown) {
+    if (!instanceId) return
+
+    if (shuttingDown) {
+      if (!shuttingDownInstanceIds.value.includes(instanceId)) {
+        shuttingDownInstanceIds.value = [...shuttingDownInstanceIds.value, instanceId]
+      }
+      return
+    }
+
+    shuttingDownInstanceIds.value = shuttingDownInstanceIds.value.filter((value) => value !== instanceId)
+  }
+
+  function handleShutdownInstance(target) {
+    const host = String(target?.host || '').trim()
+    const port = String(target?.port || '').trim()
+    if (!host || !port) return
+
+    const instanceId = `${host}:${port}`
+    markInstanceShutdownState(instanceId, true)
+    instanceScanStatusText.value = `正在关闭 ${host}:${port}...`
+    const sent = sendToHost(HOST_MESSAGE_TYPES.SHUTDOWN_COMFYUI_INSTANCE, { host, port })
+    if (!sent) {
+      markInstanceShutdownState(instanceId, false)
+      instanceScanStatusText.value = '无法发送关闭命令，请重新打开插件面板'
+      return
+    }
+
+    if (instanceId === activeConnectionEndpointText.value) {
+      setConnectionPhase('waiting', {
+        error: '',
+        statusText: `正在关闭 ${host}:${port}...`,
+        badgeText: '关闭中...',
+      })
+    }
   }
 
   function refreshWorkflowState() {
@@ -1341,6 +1798,7 @@ export function useBridgeApp() {
   function handleDisconnect() {
     pendingConnectCancellation.value = false
     resetAutoConnectState()
+    clearInstanceScanState()
     resetWorkflowResyncState()
     realtimeTickInFlight.value = false
     setConnectionPhase('disconnected', { error: '' })
@@ -1454,6 +1912,33 @@ export function useBridgeApp() {
         apiModelsError.value = message.result?.error || '模型列表读取失败'
         return
       }
+      if (message.result?.requestType === HOST_MESSAGE_TYPES.SCAN_COMFYUI_INSTANCES) {
+        const scanContext = pendingInstanceScanContext.value
+        clearInstanceScanState()
+        if (scanContext?.auto) {
+          scheduleNextAutoConnectRetry(message.result?.error || '扫描本机 ComfyUI 实例失败')
+        } else if (scanContext?.reason === 'workflow-sync') {
+          setConnectionPhase('waiting', {
+            error: '',
+            statusText: '同步工作流时扫描实例失败，正在继续等待...',
+            badgeText: '同步工作流...',
+          })
+        } else {
+          instanceScanStatusText.value = message.result?.error || '扫描本机 ComfyUI 实例失败'
+        }
+        return
+      }
+      if (message.result?.requestType === HOST_MESSAGE_TYPES.SHUTDOWN_COMFYUI_INSTANCE) {
+        const host = String(message.result?.host || '').trim()
+        const port = String(message.result?.port || '').trim()
+        if (host && port) {
+          markInstanceShutdownState(`${host}:${port}`, false)
+        } else {
+          shuttingDownInstanceIds.value = []
+        }
+        instanceScanStatusText.value = message.result?.error || '关闭后端失败'
+        return
+      }
       if (message.result?.requestType === HOST_MESSAGE_TYPES.REALTIME_TICK) {
         realtimeTickInFlight.value = false
       }
@@ -1469,7 +1954,10 @@ export function useBridgeApp() {
         clearUserStopRequested()
       }
       if (isConnectionFailure && autoConnectState.value.active) {
-        scheduleNextAutoConnectRetry(errorText)
+        requestComfyInstanceScan(autoConnectState.value.config || settingsSnapshot.value, {
+          auto: true,
+          lastError: errorText,
+        })
       } else if (isConnectionFailure) {
         setConnectionPhase('failed', { error: errorText })
       } else {
@@ -1529,6 +2017,40 @@ export function useBridgeApp() {
       if (message.payload.appMode) {
         appMode.value = message.payload.appMode
       }
+      return
+    }
+
+    if (message.type === `${HOST_MESSAGE_TYPES.SCAN_COMFYUI_INSTANCES}_RESPONSE`) {
+      const scanResult = message.result || {}
+      const scanContext = pendingInstanceScanContext.value
+
+      if (scanContext?.scanId && scanResult.scanId && scanContext.scanId !== scanResult.scanId) {
+        return
+      }
+
+      const instances = syncDetectedComfyInstances(scanResult.instances || [])
+      clearInstanceScanState()
+
+      if (scanContext?.auto) {
+        handleAutoConnectDiscoveryResult(instances, scanContext)
+      } else if (scanContext?.reason === 'workflow-sync') {
+        handleWorkflowSyncDiscoveryResult(instances, scanContext)
+      }
+      return
+    }
+
+    if (message.type === `${HOST_MESSAGE_TYPES.SHUTDOWN_COMFYUI_INSTANCE}_RESPONSE`) {
+      const result = message.result || {}
+      const host = String(result.host || '').trim()
+      const port = String(result.port || '').trim()
+      const instanceId = `${host}:${port}`
+      markInstanceShutdownState(instanceId, false)
+      instanceScanStatusText.value = `已发送关闭命令：${host}:${port}`
+      clearConnectionRetryTimer()
+      connectionRetryTimer.value = setTimeout(() => {
+        connectionRetryTimer.value = null
+        requestComfyInstanceScan(settingsSnapshot.value, { auto: false })
+      }, 700)
       return
     }
 
@@ -1674,7 +2196,10 @@ export function useBridgeApp() {
 
       if (result.error) {
         if (autoConnectState.value.active) {
-          scheduleNextAutoConnectRetry(result.error)
+          requestComfyInstanceScan(autoConnectState.value.config || settingsSnapshot.value, {
+            auto: true,
+            lastError: result.error,
+          })
         } else {
           setConnectionPhase('failed', { error: result.error })
         }
@@ -1912,6 +2437,14 @@ export function useBridgeApp() {
   )
 
   watch(
+    [showSettings, appMode],
+    () => {
+      syncInstanceScanRefreshTimer()
+    },
+    { immediate: true },
+  )
+
+  watch(
     () => connectionStore.isConnected.value,
     (nextValue, previousValue) => {
       syncRealtimeTimer()
@@ -1975,6 +2508,7 @@ export function useBridgeApp() {
     document.removeEventListener('visibilitychange', handleVisibilityChange)
     clearConnectionRetryTimer()
     clearConnectionBadgeTimer()
+    clearInstanceScanRefreshTimer()
     resetWorkflowResyncState()
     clearTaskErrorTimer()
     clearExecutionProgressSettling()
@@ -1990,6 +2524,7 @@ export function useBridgeApp() {
   return {
     actionMenuOpen,
     actionMenuRef,
+    activeConnectionEndpointText,
     activeSlot: activeHistoryId,
     apiBadgePhase: computed(() => apiBadgeState.value.phase),
     apiBadgeText: computed(() => apiBadgeState.value.text),
@@ -2022,6 +2557,8 @@ export function useBridgeApp() {
     connectionError,
     connectionPhase,
     connectionStatusText,
+    detectedComfyInstances: visibleDetectedComfyInstances,
+    inactiveDetectedComfyInstances,
     taskErrorMessage,
     frontendTargetOptions,
     currentTask: taskStore.currentTask,
@@ -2042,6 +2579,8 @@ export function useBridgeApp() {
     handleConnectionBadgePointerDown,
     handleControlTargetChange,
     handleDisconnect,
+    handleScanInstances,
+    handleShutdownInstance,
     handleSettingsChange,
     handleDisableRealtimeFromMenu,
     handleRunFromMenu,
@@ -2054,11 +2593,13 @@ export function useBridgeApp() {
     isConnected: connectionStore.isConnected,
     isApiTaskBusy,
     isConnecting,
+    isScanningComfyInstances,
     isExecutionProgressIndeterminate,
     isExecutionRunning,
     isPrimaryActionBusy,
     isPrimaryActionDisabled: primaryActionDisabled,
     isRealtimeArmed,
+    shuttingDownInstanceIds,
     isTaskRunning,
     isTaskPending,
     mainImage: activeMainImage,
@@ -2094,6 +2635,7 @@ export function useBridgeApp() {
     openSettingsPanel,
     stepsValue,
     stopTask,
+    instanceScanStatusText,
     toggleActionMenu,
     toggleDropdown,
     openedWorkflowTabs: workflowStore.openedTabs,

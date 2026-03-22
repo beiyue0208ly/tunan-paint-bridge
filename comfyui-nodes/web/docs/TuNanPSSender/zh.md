@@ -1,6 +1,10 @@
 # 图南 PS 发送器
 
-这是图南画桥把 ComfyUI 结果送回 Photoshop 的出口节点。
+> 这个节点负责把 ComfyUI 结果送回 Photoshop。  
+> 使用前请先安装图南画桥 Photoshop 插件（`.ccx`）。  
+> 下载入口：
+> - 官网：[tunanart.cn](https://tunanart.cn)
+> - GitHub Releases：[tunan-paint-bridge Releases](https://github.com/beiyue0208ly/tunan-paint-bridge/releases)
 
 ## 作用
 
@@ -11,9 +15,9 @@
 ## 常见用法
 
 - 把最终图像输出接到这个节点
-- 在 Photoshop 里双击或确认回贴后，结果会按当前模式贴回原文档
+- 在 Photoshop 里确认回贴后，结果会按当前模式贴回原文档
 
 ## 使用提示
 
 - 一条工作流里通常只需要一个发送器
-- 如果没有发送器，ComfyUI 能生成结果，但 Photoshop 侧不会收到回传图像
+- 如果没有发送器，ComfyUI 能正常出图，但 Photoshop 不会收到回传结果

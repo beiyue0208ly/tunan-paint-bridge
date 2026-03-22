@@ -359,7 +359,7 @@ def register_bridge_routes(
                     "ws": f"ws://127.0.0.1:{actual_port}/tunan/ps/ws",
                     "http": f"http://127.0.0.1:{actual_port}",
                 },
-                "version": "1.0.8",
+                "version": "1.0.9",
                 "service": "TuNanPaintBridge",
             }
         )
@@ -375,6 +375,22 @@ def register_bridge_routes(
                 "service": "TuNanPaintBridge",
             }
         )
+
+    @routes.post("/tunan/ps/shutdown")
+    async def shutdown_bridge_backend(request):
+        try:
+            actual_port = get_actual_comfyui_port(prompt_server)
+            loop = asyncio.get_running_loop()
+            loop.call_later(0.25, lambda: os._exit(0))
+            return web.json_response(
+                {
+                    "status": "success",
+                    "message": "backend_shutting_down",
+                    "port": actual_port,
+                }
+            )
+        except Exception as exc:
+            return web.json_response({"status": "error", "message": str(exc)}, status=500)
 
     @routes.post("/tunan/ps/execution_complete")
     async def handle_execution_complete(request):
@@ -414,6 +430,7 @@ def register_bridge_routes(
         "debug_status": debug_status,
         "get_port_info": get_port_info,
         "ready_check": ready_check,
+        "shutdown_bridge_backend": shutdown_bridge_backend,
         "handle_execution_complete": handle_execution_complete,
         "get_actual_comfyui_port": lambda: get_actual_comfyui_port(prompt_server),
     }

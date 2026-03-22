@@ -29,7 +29,7 @@ except ImportError:
 
 print = safe_print
 
-__version__ = "1.0.8"
+__version__ = "1.0.9"
 __author__ = AUTHOR_NAME
 __description__ = "Photoshop and ComfyUI local bridge nodes"
 __contact__ = "Email: 76030821@qq.com | QQ: 76030821"

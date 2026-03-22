@@ -1,8 +1,8 @@
 [project]
 name = "tunan-paint-bridge-nodes"
-version = "1.0.8"
+version = "1.0.9"
 license = { file = "LICENSE" }
-description = "Photoshop and ComfyUI local bridge nodes for TuNan Paint Bridge"
+description = "ComfyUI bridge nodes for TuNan Paint Bridge. Requires the Photoshop plugin (.ccx)."
 requires-python = ">=3.8"
 dynamic = ["dependencies"]
 classifiers = [
@@ -16,6 +16,8 @@ dependencies = { file = ["requirements.txt"] }
 Repository = "https://github.com/beiyue0208ly/tunan-paint-bridge"
 Homepage = "https://tunanart.cn"
 Documentation = "https://github.com/beiyue0208ly/tunan-paint-bridge-nodes#readme"
+"Releases" = "https://github.com/beiyue0208ly/tunan-paint-bridge/releases"
+"Photoshop Plugin" = "https://github.com/beiyue0208ly/tunan-paint-bridge/releases"
 "Bug Tracker" = "https://github.com/beiyue0208ly/tunan-paint-bridge-nodes/issues"
 
 [tool.comfy]

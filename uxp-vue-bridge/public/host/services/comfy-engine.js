@@ -2,6 +2,7 @@
   const COMFY_VERBOSE_LOGS = false
   const MAX_COMPLETED_PROMPT_IDS = 40
   const COMPLETED_PROMPT_ID_TTL_MS = 10 * 60 * 1000
+  const ACTIVE_FRONTEND_STALE_SECONDS = 12
 
   class TunanComfyEngine {
     constructor(workflowService, emit) {
@@ -87,6 +88,222 @@
 
     getHttpUrl(path = '') {
       return `http://${this.config.host}:${this.config.port}${path}`
+    }
+
+    getHttpUrlFor(host, port, path = '') {
+      return `http://${host}:${port}${path}`
+    }
+
+    normalizeDiscoveryHost(config = {}) {
+      return String(config.host || this.config.host || '127.0.0.1').trim() || '127.0.0.1'
+    }
+
+    isLocalDiscoveryHost(host = '') {
+      const normalizedHost = String(host || '').trim().toLowerCase()
+      return normalizedHost === '127.0.0.1' || normalizedHost === 'localhost' || normalizedHost === '::1'
+    }
+
+    resolveDiscoveryPorts(preferredPort) {
+      const ports = []
+      const seen = new Set()
+
+      const appendPort = (value) => {
+        const text = String(value || '').trim()
+        if (!/^\d+$/.test(text)) return
+
+        const numericPort = Number(text)
+        if (!Number.isFinite(numericPort) || numericPort < 1 || numericPort > 65535) {
+          return
+        }
+
+        const normalizedPort = String(Math.round(numericPort))
+        if (seen.has(normalizedPort)) return
+        seen.add(normalizedPort)
+        ports.push(normalizedPort)
+      }
+
+      appendPort(preferredPort)
+
+      for (let port = 8188; port <= 8200; port += 1) {
+        appendPort(port)
+      }
+
+      return ports
+    }
+
+    async fetchJson(url, timeoutMs = 900) {
+      const controller = typeof AbortController === 'function' ? new AbortController() : null
+      let timeoutId = null
+
+      try {
+        if (controller) {
+          timeoutId = setTimeout(() => {
+            try {
+              controller.abort()
+            } catch {}
+          }, timeoutMs)
+        }
+
+        const response = await fetch(`${url}${url.includes('?') ? '&' : '?'}_=${Date.now()}`, {
+          method: 'GET',
+          cache: 'no-store',
+          signal: controller?.signal,
+        })
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`)
+        }
+
+        return await response.json()
+      } finally {
+        if (timeoutId) {
+          clearTimeout(timeoutId)
+        }
+      }
+    }
+
+    async probeBridgeInstance(host, port) {
+      try {
+        const portInfo = await this.fetchJson(
+          this.getHttpUrlFor(host, port, '/tunan/ps/port_info'),
+          850,
+        )
+
+        if (!portInfo || portInfo.status !== 'ok') {
+          return null
+        }
+
+        const resolvedPort = String(portInfo.port || port)
+        let statusInfo = null
+        let tabsInfo = null
+
+        try {
+          statusInfo = await this.fetchJson(
+            this.getHttpUrlFor(host, resolvedPort, '/tunan/ps/status'),
+            850,
+          )
+        } catch {
+          statusInfo = null
+        }
+
+        try {
+          const tabsEnvelope = await this.fetchJson(
+            this.getHttpUrlFor(host, resolvedPort, '/tunan/ps/tabs'),
+            850,
+          )
+          tabsInfo = tabsEnvelope?.data || tabsEnvelope || null
+        } catch {
+          tabsInfo = null
+        }
+
+        const psConnected = Boolean(
+          statusInfo?.connected || statusInfo?.websocket_connected || statusInfo?.ps_connected,
+        )
+        const websocketClients = Number(
+          statusInfo?.websocket_clients || statusInfo?.client_count || 0,
+        )
+        const allFrontendSessions = Array.isArray(tabsInfo?.frontend_sessions) ? tabsInfo.frontend_sessions : []
+        const nowSeconds = Date.now() / 1000
+        const frontendSessions = allFrontendSessions.filter((session) => {
+          const lastSeen = Number(session?.last_seen || 0)
+          if (!Number.isFinite(lastSeen) || lastSeen <= 0) {
+            return true
+          }
+          return nowSeconds - lastSeen <= ACTIVE_FRONTEND_STALE_SECONDS
+        })
+        const desktopFrontends = frontendSessions.filter((session) => session?.kind === 'desktop').length
+        const browserFrontends = frontendSessions.filter((session) => session?.kind === 'browser').length
+        const unknownFrontends = Math.max(0, frontendSessions.length - desktopFrontends - browserFrontends)
+        const primarySession = frontendSessions[0] || null
+        const currentTabName = String(
+          primarySession?.current_tab_name ||
+            tabsInfo?.tabs?.find?.((tab) => tab?.is_current)?.name ||
+            primarySession?.current_tab_id ||
+            '',
+        ).trim()
+        const sessionKind = String(primarySession?.kind || tabsInfo?.session_kind || '').trim()
+        const hasActiveFrontend = frontendSessions.length > 0
+        let frontendLabel = '无前端'
+        if (hasActiveFrontend) {
+          const frontendKindLabel =
+            sessionKind === 'desktop'
+              ? '桌面端'
+              : sessionKind === 'browser'
+                ? '网页端'
+                : desktopFrontends > 0
+                  ? '桌面端'
+                  : browserFrontends > 0
+                    ? '网页端'
+                    : '前端在线'
+          frontendLabel = currentTabName ? `${frontendKindLabel} · ${currentTabName}` : frontendKindLabel
+        }
+
+        return {
+          host: String(portInfo.host || host || '127.0.0.1').trim() || '127.0.0.1',
+          port: resolvedPort,
+          service: String(portInfo.service || 'TuNanPaintBridge').trim() || 'TuNanPaintBridge',
+          bridgeVersion: String(portInfo.version || '').trim(),
+          hasActiveFrontend,
+          frontendLabel,
+          frontendSessionCount: frontendSessions.length,
+          desktopFrontends,
+          browserFrontends,
+          unknownFrontends,
+          psConnected,
+          websocketClients: Number.isFinite(websocketClients) ? websocketClients : 0,
+          statusText:
+            String(statusInfo?.status_text || '').trim() ||
+            (psConnected ? 'Photoshop 已连接' : '可连接'),
+        }
+      } catch {
+        return null
+      }
+    }
+
+    compareDiscoveredInstances(left, right, preferredHost, preferredPort) {
+      const leftFrontend = Boolean(left?.hasActiveFrontend)
+      const rightFrontend = Boolean(right?.hasActiveFrontend)
+      if (leftFrontend !== rightFrontend) {
+        return leftFrontend ? -1 : 1
+      }
+
+      const leftConnected = Boolean(left?.psConnected)
+      const rightConnected = Boolean(right?.psConnected)
+      if (leftConnected !== rightConnected) {
+        return leftConnected ? -1 : 1
+      }
+
+      const leftPreferred =
+        String(left?.host || '') === String(preferredHost || '') &&
+        String(left?.port || '') === String(preferredPort || '')
+      const rightPreferred =
+        String(right?.host || '') === String(preferredHost || '') &&
+        String(right?.port || '') === String(preferredPort || '')
+      if (leftPreferred !== rightPreferred) {
+        return leftPreferred ? -1 : 1
+      }
+
+      return Number(left?.port || 0) - Number(right?.port || 0)
+    }
+
+    async scanLocalInstances(config = {}) {
+      const host = this.normalizeDiscoveryHost(config)
+      const preferredPort = String(config.port || this.config.port || '8188')
+      const ports = this.isLocalDiscoveryHost(host)
+        ? this.resolveDiscoveryPorts(preferredPort)
+        : [preferredPort]
+
+      const probeResults = await Promise.all(ports.map((port) => this.probeBridgeInstance(host, port)))
+      const instances = probeResults
+        .filter(Boolean)
+        .sort((left, right) => this.compareDiscoveredInstances(left, right, host, preferredPort))
+
+      return {
+        host,
+        preferredPort,
+        scannedPorts: ports,
+        instances,
+      }
     }
 
     emitState(result = {}) {
@@ -349,6 +566,115 @@
           port: this.config.port,
           mode: 'comfyui',
         },
+      }
+    }
+
+    async shutdownInstance(config = {}) {
+      const host = this.normalizeDiscoveryHost(config)
+      const port = String(config.port || this.config.port || '8188').trim() || '8188'
+      const isCurrentEndpoint =
+        host === String(this.config.host || '').trim() &&
+        port === String(this.config.port || '').trim()
+
+      if (isCurrentEndpoint) {
+        this.shouldReconnect = false
+        this.clearReconnectTimer()
+        this.isBootstrappingConnection = false
+        this.workflowService.setEmitSuspended(false)
+        this.rejectPendingRequests(new Error('ComfyUI 后端正在关闭'))
+
+        if (this.ws) {
+          try {
+            this.ws.onclose = null
+            this.ws.close()
+          } catch {}
+        }
+
+        this.ws = null
+        this.isConnected = false
+        this.clearCompletedPromptIds()
+        this.resetExecutionState()
+        this.emitConnectionLifecycle('manual-disconnect', { reason: 'backend_shutdown' })
+        this.emitState({
+          connected: false,
+          meta: {
+            host,
+            port,
+            mode: 'comfyui',
+          },
+        })
+      }
+
+      const controller = typeof AbortController === 'function' ? new AbortController() : null
+      let timeoutId = null
+
+      try {
+        if (controller) {
+          timeoutId = setTimeout(() => {
+            try {
+              controller.abort()
+            } catch {}
+          }, 1800)
+        }
+
+        const response = await fetch(
+          `${this.getHttpUrlFor(host, port, '/tunan/ps/shutdown')}?_${Date.now()}`,
+          {
+            method: 'POST',
+            cache: 'no-store',
+            signal: controller?.signal,
+          },
+        )
+
+        if (!response.ok) {
+          if (response.status === 404) {
+            const notSupportedError = new Error('当前实例版本过旧，不支持关闭后端')
+            notSupportedError.host = host
+            notSupportedError.port = port
+            throw notSupportedError
+          }
+          const httpError = new Error(`关闭后端失败 (HTTP ${response.status})`)
+          httpError.host = host
+          httpError.port = port
+          throw httpError
+        }
+
+        let payload = {}
+        try {
+          payload = await response.json()
+        } catch {
+          payload = {}
+        }
+
+        return {
+          ...payload,
+          shuttingDown: true,
+          host,
+          port,
+        }
+      } catch (error) {
+        await new Promise((resolve) => setTimeout(resolve, 700))
+        try {
+          await this.fetchJson(this.getHttpUrlFor(host, port, '/tunan/ps/port_info'), 600)
+        } catch {
+          return {
+            shuttingDown: true,
+            host,
+            port,
+            status: 'success',
+            message: 'backend_shutdown_confirmed',
+          }
+        }
+
+        if (error && typeof error === 'object') {
+          error.host = host
+          error.port = port
+        }
+        throw error
+      } finally {
+        if (timeoutId) {
+          clearTimeout(timeoutId)
+        }
       }
     }
 

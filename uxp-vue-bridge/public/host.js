@@ -326,6 +326,8 @@ async function handleWebViewMessage(event) {
         error: error?.message || String(error),
         requestType: parsedMessage?.type || '',
         requestId: parsedMessage?.requestId || null,
+        host: error?.host || '',
+        port: error?.port || '',
       },
     })
   }

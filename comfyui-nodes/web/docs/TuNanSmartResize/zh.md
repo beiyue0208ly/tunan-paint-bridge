@@ -1,5 +1,10 @@
 # 图南智能缩放
 
+> 图南画桥节点通常需要配合 Photoshop 插件一起使用。  
+> Photoshop 插件下载：
+> - 官网：[tunanart.cn](https://tunanart.cn)
+> - GitHub Releases：[tunan-paint-bridge Releases](https://github.com/beiyue0208ly/tunan-paint-bridge/releases)
+
 这是给绘画工作流准备的尺寸辅助节点。
 
 ## 作用

@@ -60,6 +60,69 @@
               />
             </div>
 
+            <div class="setting-group">
+              <div class="setting-row-head">
+                <label>本机实例</label>
+                <button class="inline-action-btn" :disabled="props.isScanningInstances" @click="triggerInstanceScan">
+                  {{ props.isScanningInstances ? '扫描中...' : '扫描本机' }}
+                </button>
+              </div>
+              <div class="help-text">自动连接只会选择有活动前端的实例。下面的后台残留不会参与自动连接，但可以手动关闭。</div>
+              <div v-if="props.instanceScanStatusText" class="scan-status-text">{{ props.instanceScanStatusText }}</div>
+              <div v-if="props.detectedInstances.length" class="instance-section-title">活动中的 ComfyUI</div>
+              <div v-if="props.detectedInstances.length" class="detected-instance-list">
+                <button
+                  v-for="instance in props.detectedInstances"
+                  :key="instance.id || `${instance.host}:${instance.port}`"
+                  class="detected-instance-item"
+                  :class="{ selected: isDetectedInstanceSelected(instance), connected: isDetectedInstanceConnected(instance) }"
+                  @click="connectDetectedInstance(instance)"
+                >
+                  <div class="detected-instance-main">
+                    <span class="detected-instance-endpoint">{{ instance.host }}:{{ instance.port }}</span>
+                    <span v-if="instance.bridgeVersion" class="detected-instance-version">v{{ instance.bridgeVersion }}</span>
+                    <span class="detected-instance-subline">{{ instance.frontendLabel || '活动前端' }}</span>
+                  </div>
+                  <div class="detected-instance-badges">
+                    <span class="instance-pill" :class="{ active: instance.hasActiveFrontend }">
+                      {{ instance.hasActiveFrontend ? '活动前端' : '无前端' }}
+                    </span>
+                    <span v-if="isDetectedInstanceConnected(instance)" class="instance-pill connected">当前已连</span>
+                    <span v-else-if="isDetectedInstanceSelected(instance)" class="instance-pill selected">准备连接</span>
+                  </div>
+                </button>
+              </div>
+              <div v-else-if="!props.inactiveInstances.length" class="muted-box compact-muted">
+                还没发现活动中的 ComfyUI 前端。
+              </div>
+              <div v-if="props.inactiveInstances.length" class="instance-section-title">后台残留</div>
+              <div v-if="props.inactiveInstances.length" class="inactive-instance-list">
+                <div
+                  v-for="instance in props.inactiveInstances"
+                  :key="`inactive_${instance.id || `${instance.host}:${instance.port}`}`"
+                  class="inactive-instance-item"
+                  :class="{ connected: isDetectedInstanceConnected(instance) }"
+                >
+                  <div class="detected-instance-main">
+                    <span class="detected-instance-endpoint">{{ instance.host }}:{{ instance.port }}</span>
+                    <span v-if="instance.bridgeVersion" class="detected-instance-version">v{{ instance.bridgeVersion }}</span>
+                    <span class="detected-instance-subline">{{ instance.frontendLabel || '无活动前端' }}</span>
+                  </div>
+                  <div class="detected-instance-badges">
+                    <span class="instance-pill inactive">后台残留</span>
+                    <span v-if="isDetectedInstanceConnected(instance)" class="instance-pill connected">当前已连</span>
+                    <button
+                      class="inline-action-btn danger compact"
+                      :disabled="isDetectedInstanceShuttingDown(instance)"
+                      @click.stop="shutdownInactiveInstance(instance)"
+                    >
+                      {{ isDetectedInstanceShuttingDown(instance) ? '关闭中...' : '关闭后端' }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="setting-group checkbox-group">
               <input id="autoConnect" v-model="localSettings.autoConnect" type="checkbox" />
               <label for="autoConnect">启动时自动连接</label>
@@ -113,6 +176,10 @@
               <span :class="['status-text', isConnected ? 'connected' : 'disconnected']">
                 {{ connectionStatusText }}
               </span>
+            </div>
+
+            <div v-if="props.actualConnectionEndpointText" class="connection-meta-text">
+              当前实际连接：{{ props.actualConnectionEndpointText }}
             </div>
 
             <div class="setting-group">
@@ -588,6 +655,12 @@ const props = defineProps({
   connectionPhase: { type: String, default: 'disconnected' },
   connectionError: { type: String, default: '' },
   connectionStatusText: { type: String, default: '未连接' },
+  actualConnectionEndpointText: { type: String, default: '' },
+  detectedInstances: { type: Array, default: () => [] },
+  inactiveInstances: { type: Array, default: () => [] },
+  shuttingDownInstanceIds: { type: Array, default: () => [] },
+  isScanningInstances: { type: Boolean, default: false },
+  instanceScanStatusText: { type: String, default: '' },
   frontendTargetOptions: { type: Array, default: () => [] },
   selectedFrontendTarget: { type: String, default: '' },
   apiModelOptions: { type: Array, default: () => [] },
@@ -600,6 +673,8 @@ const emit = defineEmits([
   'update:visible',
   'connect',
   'disconnect',
+  'scan-instances',
+  'shutdown-instance',
   'fetch-api-models',
   'reset-api-models',
   'mode-change',
@@ -1397,6 +1472,7 @@ function deleteApiProfile(profileId) {
 }
 
 function saveAndConnect() {
+  commitPortInput()
   emit('connect', {
     host: localSettings.value.host,
     port: localSettings.value.port,
@@ -1412,7 +1488,54 @@ function disconnectNow() {
   })
 }
 
+function triggerInstanceScan() {
+  commitPortInput()
+  emit('scan-instances', {
+    host: localSettings.value.host,
+    port: localSettings.value.port,
+    controlFrontendTarget: localSettings.value.controlFrontendTarget,
+  })
+}
+
+function selectDetectedInstance(instance) {
+  if (!instance) return
+  localSettings.value.host = String(instance.host || localSettings.value.host || '').trim() || localSettings.value.host
+  localSettings.value.port = String(instance.port || localSettings.value.port || '').trim() || localSettings.value.port
+  portInput.value = String(localSettings.value.port || '')
+}
+
+function connectDetectedInstance(instance) {
+  if (!instance) return
+  selectDetectedInstance(instance)
+  saveAndConnect()
+}
+
+function shutdownInactiveInstance(instance) {
+  if (!instance) return
+  emit('shutdown-instance', {
+    host: String(instance.host || '').trim(),
+    port: String(instance.port || '').trim(),
+  })
+}
+
+function isDetectedInstanceSelected(instance) {
+  return (
+    String(instance?.host || '').trim() === String(localSettings.value.host || '').trim() &&
+    String(instance?.port || '').trim() === String(localSettings.value.port || '').trim()
+  )
+}
+
+function isDetectedInstanceConnected(instance) {
+  return `${String(instance?.host || '').trim()}:${String(instance?.port || '').trim()}` === String(props.actualConnectionEndpointText || '').trim()
+}
+
+function isDetectedInstanceShuttingDown(instance) {
+  const instanceId = `${String(instance?.host || '').trim()}:${String(instance?.port || '').trim()}`
+  return props.shuttingDownInstanceIds.includes(instanceId)
+}
+
 function handleConnectionAction() {
+  commitPortInput()
   if (props.isConnected || props.connectionPhase === 'connecting' || props.connectionPhase === 'waiting') {
     disconnectNow()
     return
@@ -1695,6 +1818,158 @@ watch(apiEditorVisible, async (nextVisible) => {
   color: #ff8f8f;
 }
 
+.connection-meta-text,
+.scan-status-text {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #aeb7c7;
+}
+
+.instance-section-title {
+  margin: 10px 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #dbe5ff;
+}
+
+.detected-instance-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inactive-instance-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.detected-instance-item {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #444;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  color: inherit;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.detected-instance-item:hover {
+  border-color: rgba(82, 139, 255, 0.42);
+  background: rgba(82, 139, 255, 0.08);
+  transform: translateY(-1px);
+}
+
+.detected-instance-item.selected {
+  border-color: rgba(82, 139, 255, 0.7);
+  background: rgba(82, 139, 255, 0.14);
+}
+
+.detected-instance-item.connected {
+  border-color: rgba(93, 211, 158, 0.38);
+  background: rgba(93, 211, 158, 0.08);
+}
+
+.inactive-instance-item {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.inactive-instance-item.connected {
+  border-color: rgba(93, 211, 158, 0.3);
+  background: rgba(93, 211, 158, 0.06);
+}
+
+.detected-instance-main,
+.detected-instance-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.detected-instance-main {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.detected-instance-endpoint {
+  font-size: 12px;
+  font-weight: 700;
+  color: #f0f4ff;
+}
+
+.detected-instance-version {
+  font-size: 10px;
+  color: #93a8d6;
+}
+
+.detected-instance-subline {
+  font-size: 10px;
+  color: #aeb7c7;
+}
+
+.detected-instance-badges {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.instance-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.74);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.instance-pill.connected {
+  border-color: rgba(93, 211, 158, 0.3);
+  background: rgba(93, 211, 158, 0.12);
+  color: #9fe2be;
+}
+
+.instance-pill.active {
+  border-color: rgba(82, 139, 255, 0.28);
+  background: rgba(82, 139, 255, 0.12);
+  color: #b7ceff;
+}
+
+.instance-pill.inactive {
+  border-color: rgba(255, 204, 120, 0.22);
+  background: rgba(255, 204, 120, 0.1);
+  color: #ffd89b;
+}
+
+.instance-pill.selected {
+  border-color: rgba(82, 139, 255, 0.32);
+  background: rgba(82, 139, 255, 0.14);
+  color: #b7ceff;
+}
+
+.compact-muted {
+  margin-top: 8px;
+}
+
 .button-group {
   display: flex;
 }
@@ -1760,6 +2035,18 @@ watch(apiEditorVisible, async (nextVisible) => {
   background: #528bff;
   color: #fff;
   border-color: transparent;
+}
+
+.inline-action-btn.danger {
+  border-color: rgba(255, 120, 120, 0.3);
+  background: rgba(138, 45, 45, 0.9);
+  color: #ffd3d3;
+}
+
+.inline-action-btn.compact {
+  min-width: 72px;
+  min-height: 28px;
+  padding: 0 8px;
 }
 
 .primary-btn {

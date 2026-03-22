@@ -273,6 +273,18 @@
         case TYPES.TEST_CONNECTION:
           return this.comfyEngine.testConnection(this.resolveConnectionConfig(message.payload || {}))
 
+        case TYPES.SCAN_COMFYUI_INSTANCES: {
+          const resolvedConfig = this.resolveConnectionConfig(message.payload || {})
+          const scanResult = await this.comfyEngine.scanLocalInstances(resolvedConfig)
+          return {
+            ...scanResult,
+            scanId: message.payload?.scanId || '',
+          }
+        }
+
+        case TYPES.SHUTDOWN_COMFYUI_INSTANCE:
+          return this.comfyEngine.shutdownInstance(this.resolveConnectionConfig(message.payload || {}))
+
         case TYPES.OPEN_WORKFLOW_BROWSER:
           return this.workflowService.listWorkflows()
 

@@ -5,11 +5,17 @@
       :active-tab="settingsActiveTab"
       :settings="settingsSnapshot"
       :connection-phase="connectionPhase"
+      :actual-connection-endpoint-text="activeConnectionEndpointText"
+      :detected-instances="detectedComfyInstances"
+      :inactive-instances="inactiveDetectedComfyInstances"
+      :shutting-down-instance-ids="shuttingDownInstanceIds"
       :frontend-target-options="frontendTargetOptions"
       :is-connected="isConnected"
       :is-connecting="isConnecting"
+      :is-scanning-instances="isScanningComfyInstances"
       :connection-error="connectionError"
       :connection-status-text="connectionStatusText"
+      :instance-scan-status-text="instanceScanStatusText"
       :selected-frontend-target="selectedFrontendTarget"
       :api-model-options="apiModelOptions"
       :api-models-loading="apiModelsLoading"
@@ -19,6 +25,8 @@
       @connect="handleConnect"
       @control-target-change="handleControlTargetChange"
       @disconnect="handleDisconnect"
+      @scan-instances="handleScanInstances"
+      @shutdown-instance="handleShutdownInstance"
       @fetch-api-models="fetchApiModels"
       @reset-api-models="clearApiModelListState"
       @mode-change="appMode = $event"
@@ -310,6 +318,7 @@ import { useFocusGuard } from './composables/useFocusGuard'
 
 const {
   activeSlot,
+  activeConnectionEndpointText,
   apiBadgePhase,
   apiBadgeText,
   apiBadgeTitle,
@@ -340,6 +349,8 @@ const {
   connectionError,
   connectionPhase,
   connectionStatusText,
+  detectedComfyInstances,
+  inactiveDetectedComfyInstances,
   taskErrorMessage,
   cfgScale,
   denoiseDisplay,
@@ -357,6 +368,8 @@ const {
   handleConnectionBadgePointerDown,
   handleControlTargetChange,
   handleDisconnect,
+  handleScanInstances,
+  handleShutdownInstance,
   handleSettingsChange,
   handleDisableRealtimeFromMenu,
   handleRunFromMenu,
@@ -370,11 +383,13 @@ const {
   isConnected,
   isApiTaskBusy,
   isConnecting,
+  isScanningComfyInstances,
   isExecutionProgressIndeterminate,
   isExecutionRunning,
   isPrimaryActionBusy,
   isPrimaryActionDisabled,
   isRealtimeArmed,
+  shuttingDownInstanceIds,
   isTaskRunning,
   isTaskPending,
   mainImage,
@@ -410,6 +425,7 @@ const {
   toggleActionMenu,
   toggleDropdown,
   workflows,
+  instanceScanStatusText,
 } = useBridgeApp()
 const canSendApi = computed(() => !isApiTaskBusy.value && Boolean(apiPrompt.value.trim()))
 
