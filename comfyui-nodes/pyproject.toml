@@ -1,6 +1,6 @@
 [project]
 name = "tunan-paint-bridge-nodes"
-version = "1.0.7"
+version = "1.0.8"
 license = { file = "LICENSE" }
 description = "Photoshop and ComfyUI local bridge nodes for TuNan Paint Bridge"
 requires-python = ">=3.8"
@@ -23,5 +23,5 @@ PublisherId = "beiyue0208ly"
 DisplayName = "图南画桥"
 Icon = "https://raw.githubusercontent.com/beiyue0208ly/tunan-paint-bridge-nodes/main/assets/node-icon.png"
 Banner = "https://raw.githubusercontent.com/beiyue0208ly/tunan-paint-bridge-nodes/main/assets/node-banner.png"
-requires-comfyui = ">=1.0.0"
+requires-comfyui = ">=0.18.0"
 includes = ["web"]
