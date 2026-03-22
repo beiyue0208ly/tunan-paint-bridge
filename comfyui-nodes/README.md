@@ -49,8 +49,16 @@ Photoshop 侧插件会单独以 `.ccx` 形式发布。
 - [pyproject.toml](./pyproject.toml)
 - [requirements.txt](./requirements.txt)
 - [install.py](./install.py)
+- [assets/node-icon.png](./assets/node-icon.png)
+- [assets/node-banner.png](./assets/node-banner.png)
 
-在正式提交到 Registry 前，还需要把 `pyproject.toml` 里的 GitHub 仓库地址和 `PublisherId` 改成你的真实信息。
+导出为节点专用仓库后，这一套结构就可以直接作为 ComfyUI Manager / Registry 使用的仓库根目录。
+
+## Registry 显示名
+
+- Registry / Manager 中希望用户看到的名字由 `pyproject.toml` 里的 `DisplayName` 决定
+- 当前显示名已设为：`图南画桥`
+- 也就是说，后续进入官方节点搜索时，理论上会以中文名显示
 
 ## 作者与版权
 

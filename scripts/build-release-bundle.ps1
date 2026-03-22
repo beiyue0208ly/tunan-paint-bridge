@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.0.6",
+    [string]$Version = "1.0.7",
     [Parameter(Mandatory = $true)]
     [string]$CcxPath,
     [string]$OutputRoot = "release-build"

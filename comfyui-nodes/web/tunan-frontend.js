@@ -5,7 +5,7 @@ import { api as comfyApi } from "../../scripts/api.js";
   "use strict";
 
   const PRODUCT_NAME = "图南画桥";
-  const FRONTEND_VERSION = 36;
+  const FRONTEND_VERSION = 37;
   const FRONTEND_RUNTIME_KEY = "__tunanPaintBridgeFrontendRuntime";
   const previousRuntime = window[FRONTEND_RUNTIME_KEY];
   const hasLegacyFrontend = Boolean(window.__tunanPaintBridgeFrontendLoaded && !previousRuntime);
@@ -1500,7 +1500,6 @@ import { api as comfyApi } from "../../scripts/api.js";
     const theme = getTheme(node.comfyClass);
     const layout = calculateMainLayout(node);
     const state = getBridgeConnectionState();
-    const execution = state.execution;
     const receiveVisual = getBridgeReceiveVisualState();
     const isConnected = state.connected;
     const connectedRgb = "90,214,136";
@@ -1616,22 +1615,7 @@ import { api as comfyApi } from "../../scripts/api.js";
     });
     ctx.restore();
 
-    if (execution?.is_executing) {
-      drawText(
-        ctx,
-        `执行 ${Math.round(execution.progress || 0)}%`,
-        node.size[0] / 2,
-        midY + 1,
-        {
-          color: "#e8c87a",
-          font: `bold 10.5px ${FONT_FAMILY}`,
-          align: "center",
-          baseline: "middle",
-        }
-      );
-    }
-
-    if (state.hasImage && state.sourceText && !execution?.is_executing) {
+    if (state.hasImage && state.sourceText) {
       drawText(
         ctx,
         state.sourceText,
@@ -1644,7 +1628,7 @@ import { api as comfyApi } from "../../scripts/api.js";
           baseline: "middle",
         }
       );
-    } else if (state.clientCount > 0 && !execution?.is_executing) {
+    } else if (state.clientCount > 0) {
       drawText(
         ctx,
         `${state.clientCount} 个客户端`,
