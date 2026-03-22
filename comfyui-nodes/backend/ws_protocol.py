@@ -33,9 +33,9 @@ def register_ws_routes(
 
     def write_ws_log(event, **payload):
         try:
-            LOGGER.warning("[WS] %s %s", event, json.dumps(payload, ensure_ascii=False, default=str))
+            LOGGER.debug("[WS] %s %s", event, json.dumps(payload, ensure_ascii=False, default=str))
         except Exception:
-            LOGGER.warning("[WS] %s %s", event, payload)
+            LOGGER.debug("[WS] %s %s", event, payload)
 
     async def send_json(ws, payload):
         await ws.send_str(json.dumps(payload, ensure_ascii=False))

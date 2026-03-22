@@ -129,29 +129,26 @@ class TuNanBackendPSSenderNode(node_runtime.TunanPSSender):
 
     @classmethod
     def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "图像": ("IMAGE",),
-                "回贴模式": (["选区还原模式", "整图模式"], {"default": "选区还原模式"}),
-                "边缘收缩": ("INT", {"default": 0, "min": 0, "max": 128, "step": 1}),
-                "边缘柔化": ("INT", {"default": 0, "min": 0, "max": 128, "step": 1}),
-            },
-        }
+        return node_runtime.TunanPSSender.INPUT_TYPES()
 
     def process_and_send(self, **kwargs):
         image = kwargs["图像"]
+        image_format = kwargs.get("图像格式", "PNG")
         return_mode = kwargs.get("回贴模式", "选区还原模式")
         edge_shrink = kwargs.get("边缘收缩", 0)
         edge_feather = kwargs.get("边缘柔化", 0)
+        image_name = kwargs.get("图像名称", "图南画桥")
+        jpeg_quality = kwargs.get("JPEG质量", 90)
+        png_compression = kwargs.get("PNG压缩", 6)
         return super().process_and_send(
             image,
-            "PNG",
+            image_format,
             return_mode,
             edge_shrink,
             edge_feather,
-            "图南画桥",
-            95,
-            1,
+            image_name,
+            jpeg_quality,
+            png_compression,
         )
 
 

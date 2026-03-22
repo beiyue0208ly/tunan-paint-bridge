@@ -20,9 +20,12 @@ _sender_helpers = {}
 _prompt_server = None
 _get_last_execution_time = None
 _ps_bridge_instance = None
+VERBOSE_RUNTIME_LOGS = os.environ.get("TUNAN_DEBUG_RUNTIME", "").lower() in ("1", "true", "yes")
 
 
 def _runtime_log(event, **payload):
+    if not VERBOSE_RUNTIME_LOGS:
+        return
     try:
         print(f"[TuNanRuntime] {event} {json.dumps(payload, ensure_ascii=False, default=str)}")
     except Exception:

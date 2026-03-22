@@ -31,6 +31,7 @@ import { api as comfyApi } from "../../scripts/api.js";
   const EXTENSION_NAME = "tunan.paint.bridge.frontend";
   const FONT_FAMILY = "'Microsoft YaHei', 'Segoe UI', sans-serif";
   const RECEIVE_FLASH_DURATION_MS = 1000;
+  const FRONTEND_SESSION_HEARTBEAT_MS = 5000;
   const FRONTEND_KIND = "electronAPI" in window ? "desktop" : "browser";
   const FRONTEND_SESSION_ID = (() => {
     const storageKey = "__tunanPaintBridgeFrontendSessionId";
@@ -160,6 +161,7 @@ import { api as comfyApi } from "../../scripts/api.js";
     workflowObserver: null,
     workflowObserverTarget: null,
     workflowSurfaceObserver: null,
+    workflowHeartbeatTimer: null,
     workflowClickBound: false,
     workflowTabMeta: {},
     workflowSyncToken: null,
@@ -250,6 +252,11 @@ import { api as comfyApi } from "../../scripts/api.js";
     if (STATE.workflowSurfaceObserver) {
       STATE.workflowSurfaceObserver.disconnect();
       STATE.workflowSurfaceObserver = null;
+    }
+
+    if (STATE.workflowHeartbeatTimer) {
+      window.clearInterval(STATE.workflowHeartbeatTimer);
+      STATE.workflowHeartbeatTimer = null;
     }
 
     removeManagedEventListeners();
@@ -2174,6 +2181,17 @@ import { api as comfyApi } from "../../scripts/api.js";
     }
 
     ensureWorkflowSurfaceObserver();
+    ensureWorkflowHeartbeat();
+  }
+
+  function ensureWorkflowHeartbeat() {
+    if (STATE.workflowHeartbeatTimer) {
+      return;
+    }
+
+    STATE.workflowHeartbeatTimer = window.setInterval(() => {
+      scheduleWorkflowSync(true, 0);
+    }, FRONTEND_SESSION_HEARTBEAT_MS);
   }
 
   function collectWorkflowTabsFromDom() {

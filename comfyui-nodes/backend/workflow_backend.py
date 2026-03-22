@@ -37,6 +37,8 @@ workflow_cache = {
     "last_hash": None,
 }
 
+FRONTEND_SESSION_STALE_SECONDS = 20
+
 
 def _normalize_frontend_kind(frontend_kind):
     if frontend_kind == "desktop":
@@ -44,6 +46,33 @@ def _normalize_frontend_kind(frontend_kind):
     if frontend_kind == "browser":
         return "browser"
     return "unknown"
+
+
+def _is_frontend_session_recent(session, stale_seconds=FRONTEND_SESSION_STALE_SECONDS):
+    try:
+        last_seen = float(session.get("last_seen", 0) or 0)
+    except Exception:
+        return False
+
+    if last_seen <= 0:
+        return False
+
+    return (time.time() - last_seen) <= stale_seconds
+
+
+def _prune_stale_frontend_sessions():
+    stale_session_ids = [
+        session_id
+        for session_id, session in list(frontend_tab_sessions.items())
+        if not _is_frontend_session_recent(session)
+    ]
+
+    for session_id in stale_session_ids:
+        frontend_tab_sessions.pop(session_id, None)
+
+    preferred_session_id = frontend_control_preference.get("session_id")
+    if preferred_session_id and preferred_session_id not in frontend_tab_sessions:
+        _clear_frontend_control_preference()
 
 
 def _get_frontend_session(frontend_session_id=None, frontend_kind=None):
@@ -69,11 +98,10 @@ def _get_frontend_session(frontend_session_id=None, frontend_kind=None):
 
 
 def _get_available_frontend_counts():
+    _prune_stale_frontend_sessions()
     counts = {"desktop": 0, "browser": 0, "unknown": 0}
 
     for session in frontend_tab_sessions.values():
-        if not session.get("tabs"):
-            continue
         kind = session.get("kind") or "unknown"
         counts[kind] = counts.get(kind, 0) + 1
 
@@ -86,11 +114,10 @@ def _clear_frontend_control_preference():
 
 
 def _serialize_frontend_sessions():
+    _prune_stale_frontend_sessions()
     sessions = []
     for session in frontend_tab_sessions.values():
         tabs = list(session.get("tabs", {}).values())
-        if not tabs:
-            continue
 
         selected_tab_id = session.get("current_tab")
         current_tab = next((tab for tab in tabs if tab.get("id") == selected_tab_id), None)
@@ -102,6 +129,7 @@ def _serialize_frontend_sessions():
                 "session_id": session.get("session_id"),
                 "kind": session.get("kind") or "unknown",
                 "tab_count": len(tabs),
+                "tabs_synced": bool(tabs),
                 "current_tab_id": selected_tab_id,
                 "current_tab_name": current_tab.get("name") if current_tab else None,
                 "last_seen": session.get("last_seen", 0),
@@ -114,7 +142,8 @@ def _serialize_frontend_sessions():
 
 
 def _select_authoritative_frontend_session():
-    sessions = [session for session in frontend_tab_sessions.values() if session.get("tabs")]
+    _prune_stale_frontend_sessions()
+    sessions = list(frontend_tab_sessions.values())
 
     if not sessions:
         return None
@@ -122,7 +151,7 @@ def _select_authoritative_frontend_session():
     preferred_session_id = frontend_control_preference.get("session_id")
     if preferred_session_id:
         preferred_session = frontend_tab_sessions.get(preferred_session_id)
-        if preferred_session and preferred_session.get("tabs"):
+        if preferred_session:
             return preferred_session
 
         # A manual target that no longer exists should not deadlock the bridge.
@@ -145,7 +174,10 @@ def _select_authoritative_frontend_session():
     if not preferred_sessions:
         return None
 
-    return max(preferred_sessions, key=lambda session: session.get("last_seen", 0))
+    return max(
+        preferred_sessions,
+        key=lambda session: (1 if session.get("tabs") else 0, session.get("last_seen", 0)),
+    )
 
 
 def _refresh_global_tabs_state():

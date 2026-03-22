@@ -3,6 +3,9 @@
   const MAX_COMPLETED_PROMPT_IDS = 40
   const COMPLETED_PROMPT_ID_TTL_MS = 10 * 60 * 1000
   const ACTIVE_FRONTEND_STALE_SECONDS = 12
+  const LOCAL_DISCOVERY_PORT_INFO_TIMEOUT_MS = 420
+  const LOCAL_DISCOVERY_TABS_TIMEOUT_MS = 520
+  const REMOTE_DISCOVERY_HTTP_TIMEOUT_MS = 850
   const WS_BINARY_CHUNK_SIZE = 4 * 1024 * 1024
 
   class TunanComfyEngine {
@@ -165,9 +168,17 @@
 
     async probeBridgeInstance(host, port) {
       try {
+        const isLocalProbe = this.isLocalDiscoveryHost(host)
+        const portInfoTimeoutMs = isLocalProbe
+          ? LOCAL_DISCOVERY_PORT_INFO_TIMEOUT_MS
+          : REMOTE_DISCOVERY_HTTP_TIMEOUT_MS
+        const tabsTimeoutMs = isLocalProbe
+          ? LOCAL_DISCOVERY_TABS_TIMEOUT_MS
+          : REMOTE_DISCOVERY_HTTP_TIMEOUT_MS
+
         const portInfo = await this.fetchJson(
           this.getHttpUrlFor(host, port, '/tunan/ps/port_info'),
-          850,
+          portInfoTimeoutMs,
         )
 
         if (!portInfo || portInfo.status !== 'ok') {
@@ -175,34 +186,18 @@
         }
 
         const resolvedPort = String(portInfo.port || port)
-        let statusInfo = null
         let tabsInfo = null
-
-        try {
-          statusInfo = await this.fetchJson(
-            this.getHttpUrlFor(host, resolvedPort, '/tunan/ps/status'),
-            850,
-          )
-        } catch {
-          statusInfo = null
-        }
 
         try {
           const tabsEnvelope = await this.fetchJson(
             this.getHttpUrlFor(host, resolvedPort, '/tunan/ps/tabs'),
-            850,
+            tabsTimeoutMs,
           )
           tabsInfo = tabsEnvelope?.data || tabsEnvelope || null
         } catch {
           tabsInfo = null
         }
 
-        const psConnected = Boolean(
-          statusInfo?.connected || statusInfo?.websocket_connected || statusInfo?.ps_connected,
-        )
-        const websocketClients = Number(
-          statusInfo?.websocket_clients || statusInfo?.client_count || 0,
-        )
         const allFrontendSessions = Array.isArray(tabsInfo?.frontend_sessions) ? tabsInfo.frontend_sessions : []
         const nowSeconds = Date.now() / 1000
         const frontendSessions = allFrontendSessions.filter((session) => {
@@ -223,6 +218,7 @@
             '',
         ).trim()
         const sessionKind = String(primarySession?.kind || tabsInfo?.session_kind || '').trim()
+        const tabsSynced = Number(primarySession?.tab_count || 0) > 0 || Boolean(currentTabName)
         const hasActiveFrontend = frontendSessions.length > 0
         let frontendLabel = '无前端'
         if (hasActiveFrontend) {
@@ -236,7 +232,11 @@
                   : browserFrontends > 0
                     ? '网页端'
                     : '前端在线'
-          frontendLabel = currentTabName ? `${frontendKindLabel} · ${currentTabName}` : frontendKindLabel
+          frontendLabel = currentTabName
+            ? `${frontendKindLabel} · ${currentTabName}`
+            : tabsSynced
+              ? frontendKindLabel
+              : `${frontendKindLabel} · 标签未同步`
         }
 
         return {
@@ -250,11 +250,9 @@
           desktopFrontends,
           browserFrontends,
           unknownFrontends,
-          psConnected,
-          websocketClients: Number.isFinite(websocketClients) ? websocketClients : 0,
-          statusText:
-            String(statusInfo?.status_text || '').trim() ||
-            (psConnected ? 'Photoshop 已连接' : '可连接'),
+          psConnected: false,
+          websocketClients: 0,
+          statusText: hasActiveFrontend ? '活动前端在线' : '桥接后端在线',
         }
       } catch {
         return null
@@ -1176,13 +1174,285 @@
     }
 
     createCanvasImageData(ctx, rgba, width, height) {
-      const imageData = typeof ImageData === 'function'
-        ? new ImageData(rgba, width, height)
-        : ctx.createImageData(width, height)
+      let imageData = null
+
+      if (typeof ImageData === 'function') {
+        try {
+          imageData = new ImageData(rgba, width, height)
+        } catch {
+          imageData = null
+        }
+      }
+
+      if (!imageData && typeof ctx?.createImageData === 'function') {
+        try {
+          imageData = ctx.createImageData(width, height)
+        } catch {
+          imageData = null
+        }
+      }
+
+      if (!imageData && typeof ctx?.getImageData === 'function') {
+        try {
+          imageData = ctx.getImageData(0, 0, width, height)
+        } catch {
+          imageData = null
+        }
+      }
+
+      if (!imageData) {
+        throw new Error('当前 Photoshop 画布上下文不支持 ImageData')
+      }
+
       if (typeof imageData?.data?.set === 'function') {
         imageData.data.set(rgba)
       }
       return imageData
+    }
+
+    getPhotoshopImaging() {
+      try {
+        const photoshop = require('photoshop')
+        return photoshop?.imaging || null
+      } catch {
+        return null
+      }
+    }
+
+    ensureImageDataUrl(base64OrDataUrl, mimeType = 'image/png') {
+      const rawValue = String(base64OrDataUrl || '').trim()
+      if (!rawValue) {
+        return ''
+      }
+
+      if (rawValue.startsWith('data:')) {
+        return rawValue
+      }
+
+      return `data:${mimeType};base64,${rawValue}`
+    }
+
+    flattenRgbaForJpeg(rgba) {
+      const source = rgba instanceof Uint8Array ? rgba : new Uint8Array(rgba || 0)
+      const pixelCount = Math.floor(source.length / 4)
+      const rgb = new Uint8Array(pixelCount * 3)
+
+      for (let pixelIndex = 0; pixelIndex < pixelCount; pixelIndex += 1) {
+        const srcIndex = pixelIndex * 4
+        const dstIndex = pixelIndex * 3
+        const alpha = source[srcIndex + 3] / 255
+        const matte = 255
+
+        rgb[dstIndex] = Math.round(source[srcIndex] * alpha + matte * (1 - alpha))
+        rgb[dstIndex + 1] = Math.round(source[srcIndex + 1] * alpha + matte * (1 - alpha))
+        rgb[dstIndex + 2] = Math.round(source[srcIndex + 2] * alpha + matte * (1 - alpha))
+      }
+
+      return rgb
+    }
+
+    resizeRgbaNearest(rgba, sourceWidth, sourceHeight, targetWidth, targetHeight) {
+      const srcWidth = Math.max(1, Math.round(sourceWidth || 1))
+      const srcHeight = Math.max(1, Math.round(sourceHeight || 1))
+      const dstWidth = Math.max(1, Math.round(targetWidth || srcWidth))
+      const dstHeight = Math.max(1, Math.round(targetHeight || srcHeight))
+      const source = rgba instanceof Uint8Array ? rgba : new Uint8Array(rgba || 0)
+
+      if (srcWidth === dstWidth && srcHeight === dstHeight) {
+        return source
+      }
+
+      const resized = new Uint8Array(dstWidth * dstHeight * 4)
+      for (let y = 0; y < dstHeight; y += 1) {
+        const srcY = Math.min(srcHeight - 1, Math.floor(((y + 0.5) * srcHeight) / dstHeight))
+        for (let x = 0; x < dstWidth; x += 1) {
+          const srcX = Math.min(srcWidth - 1, Math.floor(((x + 0.5) * srcWidth) / dstWidth))
+          const srcIndex = (srcY * srcWidth + srcX) * 4
+          const dstIndex = (y * dstWidth + x) * 4
+          resized[dstIndex] = source[srcIndex]
+          resized[dstIndex + 1] = source[srcIndex + 1]
+          resized[dstIndex + 2] = source[srcIndex + 2]
+          resized[dstIndex + 3] = source[srcIndex + 3]
+        }
+      }
+
+      return resized
+    }
+
+    getCrc32Table() {
+      if (this._crc32Table) {
+        return this._crc32Table
+      }
+
+      const table = new Uint32Array(256)
+      for (let index = 0; index < 256; index += 1) {
+        let crc = index
+        for (let bit = 0; bit < 8; bit += 1) {
+          crc = (crc & 1) ? (0xedb88320 ^ (crc >>> 1)) : (crc >>> 1)
+        }
+        table[index] = crc >>> 0
+      }
+
+      this._crc32Table = table
+      return table
+    }
+
+    crc32(bytes) {
+      const table = this.getCrc32Table()
+      let crc = 0xffffffff
+      for (let index = 0; index < bytes.length; index += 1) {
+        crc = table[(crc ^ bytes[index]) & 0xff] ^ (crc >>> 8)
+      }
+      return (crc ^ 0xffffffff) >>> 0
+    }
+
+    adler32(bytes) {
+      let a = 1
+      let b = 0
+      const mod = 65521
+      for (let index = 0; index < bytes.length; index += 1) {
+        a = (a + bytes[index]) % mod
+        b = (b + a) % mod
+      }
+      return (((b << 16) | a) >>> 0)
+    }
+
+    uint32ToBytes(value) {
+      const normalized = Number(value >>> 0)
+      return new Uint8Array([
+        (normalized >>> 24) & 0xff,
+        (normalized >>> 16) & 0xff,
+        (normalized >>> 8) & 0xff,
+        normalized & 0xff,
+      ])
+    }
+
+    concatByteArrays(chunks = []) {
+      const totalLength = chunks.reduce((sum, chunk) => sum + (chunk?.length || 0), 0)
+      const result = new Uint8Array(totalLength)
+      let offset = 0
+      for (const chunk of chunks) {
+        if (!chunk?.length) {
+          continue
+        }
+        result.set(chunk, offset)
+        offset += chunk.length
+      }
+      return result
+    }
+
+    buildPngChunk(type, data = new Uint8Array(0)) {
+      const typeBytes = new Uint8Array([
+        type.charCodeAt(0),
+        type.charCodeAt(1),
+        type.charCodeAt(2),
+        type.charCodeAt(3),
+      ])
+      const payload = data instanceof Uint8Array ? data : new Uint8Array(data || 0)
+      const crc = this.crc32(this.concatByteArrays([typeBytes, payload]))
+      return this.concatByteArrays([
+        this.uint32ToBytes(payload.length),
+        typeBytes,
+        payload,
+        this.uint32ToBytes(crc),
+      ])
+    }
+
+    buildStoredZlibBlock(data) {
+      const source = data instanceof Uint8Array ? data : new Uint8Array(data || 0)
+      const chunks = [new Uint8Array([0x78, 0x01])]
+      let offset = 0
+
+      while (offset < source.length) {
+        const remaining = source.length - offset
+        const blockLength = Math.min(65535, remaining)
+        const isFinal = offset + blockLength >= source.length
+        const block = new Uint8Array(5 + blockLength)
+        block[0] = isFinal ? 0x01 : 0x00
+        block[1] = blockLength & 0xff
+        block[2] = (blockLength >>> 8) & 0xff
+        const nlen = (~blockLength) & 0xffff
+        block[3] = nlen & 0xff
+        block[4] = (nlen >>> 8) & 0xff
+        block.set(source.subarray(offset, offset + blockLength), 5)
+        chunks.push(block)
+        offset += blockLength
+      }
+
+      chunks.push(this.uint32ToBytes(this.adler32(source)))
+      return this.concatByteArrays(chunks)
+    }
+
+    encodeRgbaAsPngDataUrl(rgba, width, height, outputWidth = width, outputHeight = height) {
+      const canvasWidth = Math.max(1, Math.round(width || 1))
+      const canvasHeight = Math.max(1, Math.round(height || 1))
+      const encodedWidth = Math.max(1, Math.round(outputWidth || canvasWidth))
+      const encodedHeight = Math.max(1, Math.round(outputHeight || canvasHeight))
+      const resizedRgba = this.resizeRgbaNearest(
+        rgba,
+        canvasWidth,
+        canvasHeight,
+        encodedWidth,
+        encodedHeight,
+      )
+      const stride = encodedWidth * 4
+      const scanlines = new Uint8Array((stride + 1) * encodedHeight)
+
+      for (let y = 0; y < encodedHeight; y += 1) {
+        const srcOffset = y * stride
+        const dstOffset = y * (stride + 1)
+        scanlines[dstOffset] = 0
+        scanlines.set(resizedRgba.subarray(srcOffset, srcOffset + stride), dstOffset + 1)
+      }
+
+      const ihdr = new Uint8Array(13)
+      ihdr.set(this.uint32ToBytes(encodedWidth), 0)
+      ihdr.set(this.uint32ToBytes(encodedHeight), 4)
+      ihdr[8] = 8
+      ihdr[9] = 6
+
+      const pngBytes = this.concatByteArrays([
+        new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+        this.buildPngChunk('IHDR', ihdr),
+        this.buildPngChunk('IDAT', this.buildStoredZlibBlock(scanlines)),
+        this.buildPngChunk('IEND', new Uint8Array(0)),
+      ])
+
+      return this.ensureImageDataUrl(this.bytesToBase64(pngBytes), 'image/png')
+    }
+
+    async encodeRgbaAsJpegWithPhotoshopImaging(rgba, width, height) {
+      const imaging = this.getPhotoshopImaging()
+      if (!imaging?.createImageDataFromBuffer || !imaging?.encodeImageData) {
+        return ''
+      }
+
+      let imageData = null
+
+      try {
+        const pixelBuffer = this.flattenRgbaForJpeg(rgba)
+        imageData = await imaging.createImageDataFromBuffer(pixelBuffer, {
+          width: Math.max(1, Math.round(width || 1)),
+          height: Math.max(1, Math.round(height || 1)),
+          components: 3,
+          chunky: true,
+          colorSpace: 'RGB',
+          colorProfile: 'sRGB IEC61966-2.1',
+        })
+
+        const encodedBase64 = await imaging.encodeImageData({
+          imageData,
+          base64: true,
+        })
+
+        return this.ensureImageDataUrl(encodedBase64, 'image/jpeg')
+      } catch {
+        return ''
+      } finally {
+        try {
+          imageData?.dispose?.()
+        } catch {}
+      }
     }
 
     buildCanvasRgbaFromRawAsset(asset = {}, { flattenAlpha = false, useLastComponentAsAlphaOnly = false } = {}) {
@@ -1314,10 +1584,6 @@
     }
 
     async rawImagePayloadToDataUrl(asset = {}) {
-      if (typeof document === 'undefined') {
-        return ''
-      }
-
       const format = this.normalizeEncodedImageFormat(asset.outputFormat || asset.format || 'png')
       const renderPayload = this.buildCanvasRgbaFromRawAsset(asset, {
         flattenAlpha: format === 'jpg',
@@ -1333,25 +1599,72 @@
         outputWidth,
         outputHeight,
       } = renderPayload
-      const canvas = document.createElement('canvas')
-      canvas.width = canvasWidth
-      canvas.height = canvasHeight
-      const ctx = canvas.getContext('2d')
-      if (!ctx) {
+      const formatMimeType = format === 'jpg' ? 'image/jpeg' : 'image/png'
+      const quality = Math.max(0.1, Math.min(1, Number(asset.jpegQuality || 90) / 100))
+      if (format === 'jpg') {
+        const jpegDataUrl = await this.encodeRgbaAsJpegWithPhotoshopImaging(
+          rgba,
+          canvasWidth,
+          canvasHeight,
+        )
+        if (jpegDataUrl) {
+          if (outputWidth === canvasWidth && outputHeight === canvasHeight) {
+            return jpegDataUrl
+          }
+
+          return this.resizeDataUrl(
+            jpegDataUrl,
+            outputWidth,
+            outputHeight,
+            formatMimeType,
+            quality,
+          )
+        }
+      }
+
+      if (format === 'png') {
+        try {
+          return this.encodeRgbaAsPngDataUrl(
+            rgba,
+            canvasWidth,
+            canvasHeight,
+            outputWidth,
+            outputHeight,
+          )
+        } catch {}
+      }
+
+      if (typeof document === 'undefined') {
         return ''
       }
 
-      const imageData = this.createCanvasImageData(ctx, rgba, canvasWidth, canvasHeight)
-      ctx.putImageData(imageData, 0, 0)
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = canvasWidth
+        canvas.height = canvasHeight
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          return ''
+        }
 
-      const mimeType = format === 'jpg' ? 'image/jpeg' : 'image/png'
-      const quality = Math.max(0.1, Math.min(1, Number(asset.jpegQuality || 90) / 100))
-      const encoded = canvas.toDataURL(mimeType, quality)
-      if (outputWidth === canvasWidth && outputHeight === canvasHeight) {
-        return encoded
+        const imageData = this.createCanvasImageData(ctx, rgba, canvasWidth, canvasHeight)
+        ctx.putImageData(imageData, 0, 0)
+
+        const encoded = canvas.toDataURL(formatMimeType, quality)
+        if (outputWidth === canvasWidth && outputHeight === canvasHeight) {
+          return encoded
+        }
+
+        return this.resizeDataUrl(
+          encoded,
+          outputWidth,
+          outputHeight,
+          formatMimeType,
+          quality,
+        )
+      } catch {
+        return ''
       }
-
-      return this.resizeDataUrl(encoded, outputWidth, outputHeight, mimeType, quality)
     }
 
     async prepareImageTransport(image = {}) {
@@ -1376,21 +1689,13 @@
           }
         }
 
-        return {
-          bytes: image.rawPixels instanceof Uint8Array ? image.rawPixels : new Uint8Array(image.rawPixels),
-          format: image.format || 'raw',
-          isRawTransport: true,
-        }
+        throw new Error('PNG/JPG 编码失败，未发送原始像素兜底通道')
       }
 
       throw new Error('没有可上传的 Photoshop 图像')
     }
 
     async rawMaskPayloadToDataUrl(asset = {}) {
-      if (typeof document === 'undefined') {
-        return ''
-      }
-
       const renderPayload = this.buildCanvasRgbaFromRawAsset(asset, {
         useLastComponentAsAlphaOnly: true,
       })
@@ -1405,22 +1710,40 @@
         outputHeight,
       } = renderPayload
 
-      const canvas = document.createElement('canvas')
-      canvas.width = canvasWidth
-      canvas.height = canvasHeight
-      const ctx = canvas.getContext('2d')
-      if (!ctx) {
+      try {
+        return this.encodeRgbaAsPngDataUrl(
+          rgba,
+          canvasWidth,
+          canvasHeight,
+          outputWidth,
+          outputHeight,
+        )
+      } catch {}
+
+      if (typeof document === 'undefined') {
         return ''
       }
 
-      const imageData = this.createCanvasImageData(ctx, rgba, canvasWidth, canvasHeight)
-      ctx.putImageData(imageData, 0, 0)
-      const encoded = canvas.toDataURL('image/png')
-      if (outputWidth === canvasWidth && outputHeight === canvasHeight) {
-        return encoded
-      }
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = canvasWidth
+        canvas.height = canvasHeight
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          return ''
+        }
 
-      return this.resizeDataUrl(encoded, outputWidth, outputHeight, 'image/png', 1)
+        const imageData = this.createCanvasImageData(ctx, rgba, canvasWidth, canvasHeight)
+        ctx.putImageData(imageData, 0, 0)
+        const encoded = canvas.toDataURL('image/png')
+        if (outputWidth === canvasWidth && outputHeight === canvasHeight) {
+          return encoded
+        }
+
+        return this.resizeDataUrl(encoded, outputWidth, outputHeight, 'image/png', 1)
+      } catch {
+        return ''
+      }
     }
 
     async appendMaskMetadata(binaryMeta, prefix, asset = null) {
@@ -1437,6 +1760,8 @@
           binaryMeta[`${prefix}_format`] = 'png'
           return
         }
+
+        throw new Error(`${prefix} PNG 编码失败，未发送原始蒙版兜底通道`)
       }
 
       if (asset.data) {
@@ -1509,8 +1834,18 @@
         byteLength: Number(imageBytes.byteLength || 0),
         chunkCount,
         usedRawTransport: Boolean(imageTransport.isRawTransport),
-        selectionMaskIncluded: Boolean(binaryMeta.selection_mask_data || binaryMeta.selection_mask_format),
-        contentAlphaIncluded: Boolean(binaryMeta.content_alpha_data || binaryMeta.content_alpha_format),
+        selectionMaskIncluded: Boolean(
+          binaryMeta.selection_mask_data ||
+          binaryMeta.selection_mask_format ||
+          binaryMeta.selection_mask_raw ||
+          binaryMeta.selection_mask_raw_data
+        ),
+        contentAlphaIncluded: Boolean(
+          binaryMeta.content_alpha_data ||
+          binaryMeta.content_alpha_format ||
+          binaryMeta.content_alpha_raw ||
+          binaryMeta.content_alpha_raw_data
+        ),
       }
       const transferStartedAt = Date.now()
       this.emitTransportDiagnostics(transportSummary)

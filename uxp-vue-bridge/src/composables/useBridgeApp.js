@@ -531,18 +531,11 @@ export function useBridgeApp() {
     const endpoint = activeConnectionEndpointText.value
     if (!endpoint) return null
 
-    const existing = detectedComfyInstances.value.find((instance) => instance.id === endpoint)
-    if (existing) {
-      return {
-        ...existing,
-        hasActiveFrontend: true,
-      }
-    }
-
-    const [host = '', port = ''] = endpoint.split(':')
-    if (!host || !port) return null
-
     const primarySession = frontendSessions.value[0] || null
+    const hasDerivedFrontendState =
+      frontendSessions.value.length > 0 ||
+      Boolean(activeFrontend.value?.kind) ||
+      Boolean(activeFrontend.value?.sessionId)
     const primaryKind = String(primarySession?.kind || activeFrontend.value?.kind || 'desktop').trim()
     const primaryTabName = String(
       primarySession?.current_tab_name ||
@@ -557,6 +550,25 @@ export function useBridgeApp() {
         : primaryKind === 'desktop'
           ? '桌面端'
           : '当前前端'
+    const derivedFrontendLabel = hasDerivedFrontendState
+      ? (primaryTabName ? `${kindLabel} · ${primaryTabName}` : kindLabel)
+      : ''
+
+    const existing = detectedComfyInstances.value.find((instance) => instance.id === endpoint)
+    if (existing) {
+      if (!existing.hasActiveFrontend && !hasDerivedFrontendState) {
+        return null
+      }
+
+      return {
+        ...existing,
+        hasActiveFrontend: existing.hasActiveFrontend || hasDerivedFrontendState,
+        frontendLabel: derivedFrontendLabel || existing.frontendLabel,
+      }
+    }
+
+    const [host = '', port = ''] = endpoint.split(':')
+    if (!host || !port || !hasDerivedFrontendState) return null
 
     return {
       id: endpoint,
@@ -565,7 +577,7 @@ export function useBridgeApp() {
       bridgeVersion: '',
       service: 'TuNanPaintBridge',
       hasActiveFrontend: true,
-      frontendLabel: primaryTabName ? `${kindLabel} · ${primaryTabName}` : kindLabel,
+      frontendLabel: derivedFrontendLabel,
       psConnected: true,
       websocketClients: 1,
       statusText: 'Photoshop 已连接',
@@ -1127,6 +1139,20 @@ export function useBridgeApp() {
   }
 
   function handleAutoConnectDiscoveryResult(instances = [], context = {}) {
+    appendDiagnosticLog('info', 'connection', '自动扫描结果已返回', {
+      requestedHost: String(context.config?.host || '').trim(),
+      requestedPort: String(context.config?.port || '').trim(),
+      instanceCount: instances.length,
+      activeFrontendCount: instances.filter((instance) => instance.hasActiveFrontend).length,
+      instances: instances.map((instance) => ({
+        host: instance.host,
+        port: instance.port,
+        hasActiveFrontend: instance.hasActiveFrontend,
+        frontendLabel: instance.frontendLabel,
+        statusText: instance.statusText,
+      })),
+    })
+
     const autoSelectedInstance = pickPreferredAutoConnectInstance(instances)
     if (autoSelectedInstance) {
       const requestedHost = String(context.config?.host || '').trim()

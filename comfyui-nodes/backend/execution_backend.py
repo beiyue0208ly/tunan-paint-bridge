@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
 import uuid
 
 import aiohttp
 from aiohttp import web
 from comfy_execution.progress import get_progress_state
+
+VERBOSE_PROGRESS_LOGS = os.environ.get("TUNAN_DEBUG_PROGRESS", "").lower() in ("1", "true", "yes")
 
 
 class ExecutionBackend:
@@ -27,6 +30,8 @@ class ExecutionBackend:
         return self.ps_connection_getter() if self.ps_connection_getter else None
 
     def _log_progress(self, stage, payload=None):
+        if not VERBOSE_PROGRESS_LOGS:
+            return
         try:
             print(f"[ExecutionProgress] {stage}", payload if payload is not None else "")
         except Exception:

@@ -150,16 +150,37 @@
       return this.runModalOperation('图南画桥导出', async () => {
         const docBounds = this.ps.getDocumentBounds(doc)
         const targetSize = this.ps.calculateTargetSize(docBounds.width, docBounds.height, settings)
-        const pixelCapture = await this.getDocumentPixelCapture(doc, { sourceBounds: docBounds })
+        const preferDirectJpeg = settings.imageFormat === 'jpg'
+        let pixelCapture = null
 
         try {
-          const image = await this.buildCapturePayload(pixelCapture, {
-            name: `merged_${Date.now()}.raw`,
-            canvasBounds: docBounds,
-            targetSize,
-            outputFormat: settings.imageFormat === 'jpg' ? 'jpg' : 'png',
-            jpegQuality: Number(settings.jpegQuality || 90),
-          })
+          let image = null
+
+          if (preferDirectJpeg) {
+            pixelCapture = await this.getDocumentPixelCapture(doc, {
+              sourceBounds: docBounds,
+              targetSize,
+            })
+            image = await this.buildDirectJpegPayloadFromImageData(pixelCapture.imageData, {
+              name: `merged_${Date.now()}.jpg`,
+            })
+
+            if (!image) {
+              this.disposeCapture(pixelCapture)
+              pixelCapture = null
+            }
+          }
+
+          if (!image) {
+            pixelCapture = await this.getDocumentPixelCapture(doc, { sourceBounds: docBounds })
+            image = await this.buildCapturePayload(pixelCapture, {
+              name: `merged_${Date.now()}.raw`,
+              canvasBounds: docBounds,
+              targetSize,
+              outputFormat: preferDirectJpeg ? 'jpg' : 'png',
+              jpegQuality: Number(settings.jpegQuality || 90),
+            })
+          }
 
           return {
             image,
@@ -287,7 +308,27 @@
               })
             }
           } else {
-            imageCapture = await this.getDocumentPixelCapture(doc, { sourceBounds: sendBounds })
+            const preferDirectJpeg =
+              selectionSendMode !== 'shape' && settings.imageFormat === 'jpg'
+
+            if (preferDirectJpeg) {
+              imageCapture = await this.getDocumentPixelCapture(doc, {
+                sourceBounds: sendBounds,
+                targetSize,
+              })
+              image = await this.buildDirectJpegPayloadFromImageData(imageCapture.imageData, {
+                name: `selection_rect_${Date.now()}.jpg`,
+              })
+
+              if (!image) {
+                this.disposeCapture(imageCapture)
+                imageCapture = null
+              }
+            }
+
+            if (!imageCapture) {
+              imageCapture = await this.getDocumentPixelCapture(doc, { sourceBounds: sendBounds })
+            }
 
             if (selectionSendMode === 'shape') {
               image = await this.buildMaskedImagePayload(imageCapture, selectionMaskCapture, {
@@ -296,7 +337,7 @@
                 targetSize,
                 preserveSourceAlpha: false,
               })
-            } else {
+            } else if (!image) {
               image = await this.buildCapturePayload(imageCapture, {
                 name: `selection_rect_${Date.now()}.raw`,
                 canvasBounds: sendBounds,
@@ -585,6 +626,59 @@
         bottom,
         width: Math.max(0, right - left),
         height: Math.max(0, bottom - top),
+      }
+    }
+
+    ensureDataUrl(base64OrDataUrl, mimeType = 'image/jpeg') {
+      const rawValue = String(base64OrDataUrl || '').trim()
+      if (!rawValue) {
+        return ''
+      }
+
+      if (rawValue.startsWith('data:')) {
+        return rawValue
+      }
+
+      return `data:${mimeType};base64,${rawValue}`
+    }
+
+    async buildDirectJpegPayloadFromImageData(
+      photoshopImageData,
+      {
+        name = `capture_${Date.now()}.jpg`,
+      } = {},
+    ) {
+      if (!photoshopImageData) {
+        return null
+      }
+
+      const photoshop = require('photoshop')
+      const imaging = photoshop?.imaging
+
+      if (!imaging?.encodeImageData) {
+        return null
+      }
+
+      try {
+        const encodedBase64 = await imaging.encodeImageData({
+          imageData: photoshopImageData,
+          base64: true,
+        })
+        const data = this.ensureDataUrl(encodedBase64, 'image/jpeg')
+
+        if (!data) {
+          return null
+        }
+
+        return {
+          data,
+          format: 'jpg',
+          width: Math.max(1, Math.round(photoshopImageData.width || 1)),
+          height: Math.max(1, Math.round(photoshopImageData.height || 1)),
+          name,
+        }
+      } catch {
+        return null
       }
     }
 

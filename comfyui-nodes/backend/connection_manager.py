@@ -98,7 +98,7 @@ class PSConnectionManager:
             await asyncio.sleep(0.5)
             current_time = time.time()
             authoritative_state = self.workflow_backend._refresh_global_tabs_state()
-            LOGGER.warning(
+            LOGGER.debug(
                 "[PSConnection] send_initial_workflow_state current_tab=%s tabs=%s session=%s",
                 authoritative_state.get("current_tab"),
                 len(authoritative_state.get("tabs", [])),
@@ -129,7 +129,7 @@ class PSConnectionManager:
 
             for event_name in ("tunan_request_current_workflow", "tunan_request_tabs"):
                 try:
-                    LOGGER.warning("[PSConnection] request_frontend_sync event=%s", event_name)
+                    LOGGER.debug("[PSConnection] request_frontend_sync event=%s", event_name)
                     await self.prompt_server.instance.send(event_name, request_payload)
                 except Exception:
                     LOGGER.exception("[PSConnection] request_frontend_sync_failed event=%s", event_name)

@@ -1601,6 +1601,133 @@
       }
     }
 
+    async createPixelLayer(targetDoc, layerName = '') {
+      if (!targetDoc) {
+        return null
+      }
+
+      let createdLayer = null
+
+      try {
+        if (typeof targetDoc.createLayer === 'function') {
+          createdLayer = await targetDoc.createLayer()
+        }
+      } catch {}
+
+      if (createdLayer && layerName) {
+        createdLayer.name = layerName
+      }
+
+      return createdLayer
+    }
+
+    async readDocumentCompositeImageData(doc, targetBounds = null) {
+      if (!doc) {
+        return null
+      }
+
+      const photoshop = require('photoshop')
+      const imaging = photoshop?.imaging
+      if (!imaging?.getPixels) {
+        return null
+      }
+
+      const documentWidth = Math.max(1, Math.round(this.toPixels(doc.width)))
+      const documentHeight = Math.max(1, Math.round(this.toPixels(doc.height)))
+      const request = {
+        documentID: doc.id ?? doc._id,
+        sourceBounds: {
+          left: 0,
+          top: 0,
+          right: documentWidth,
+          bottom: documentHeight,
+        },
+        colorSpace: 'RGB',
+        componentSize: 8,
+      }
+
+      if (targetBounds?.width && targetBounds?.height) {
+        request.targetSize = {
+          width: Math.max(1, Math.round(targetBounds.width)),
+          height: Math.max(1, Math.round(targetBounds.height)),
+        }
+      }
+
+      const imageObj = await imaging.getPixels(request)
+      return imageObj?.imageData || null
+    }
+
+    async placeImageViaPutPixels(fileEntry, targetDoc, targetBounds, targetLayerType = 'pixelLayer', layerName = '') {
+      if (!fileEntry || !targetDoc || !targetBounds) {
+        return null
+      }
+
+      const photoshop = require('photoshop')
+      const { app } = photoshop
+      const imaging = photoshop?.imaging
+      if (!imaging?.putPixels) {
+        return null
+      }
+
+      let importDoc = null
+      let imageData = null
+      let placedLayer = null
+      let degradedToPixelLayer = false
+      let actualLayerType = 'pixelLayer'
+
+      try {
+        importDoc = await app.open(fileEntry)
+        imageData = await this.readDocumentCompositeImageData(importDoc, targetBounds)
+        if (!imageData) {
+          return null
+        }
+
+        placedLayer = await this.createPixelLayer(targetDoc, layerName)
+        if (!placedLayer) {
+          return null
+        }
+
+        await imaging.putPixels({
+          documentID: targetDoc.id ?? targetDoc._id,
+          layerID: placedLayer.id,
+          imageData,
+          replace: true,
+          targetBounds: {
+            left: Math.round(targetBounds.left || 0),
+            top: Math.round(targetBounds.top || 0),
+          },
+          commandName: '图南画桥回贴',
+        })
+
+        if (targetLayerType === 'smartObject') {
+          try {
+            placedLayer = await this.convertLayerToSmartObject(placedLayer)
+            actualLayerType = 'smartObject'
+          } catch {
+            degradedToPixelLayer = true
+            actualLayerType = 'pixelLayer'
+            placedLayer = targetDoc.activeLayers?.[0] || placedLayer
+          }
+        }
+
+        if (placedLayer && layerName) {
+          placedLayer.name = layerName
+        }
+
+        return {
+          layer: placedLayer,
+          actualLayerType,
+          degradedToPixelLayer,
+          placedByPutPixels: true,
+        }
+      } finally {
+        try {
+          imageData?.dispose?.()
+        } catch {}
+        await this.closeDocumentWithoutSaving(importDoc)
+      }
+    }
+
     buildPhotoshopImportError(stageLabel, error) {
       const rawMessage = error?.message || String(error || '')
       const code = error?.number ?? error?.code ?? error?.result ?? null
@@ -1634,7 +1761,7 @@
 
       return require('photoshop').core.executeAsModal(
         async () => {
-          const { app, action } = require('photoshop')
+          const { app } = require('photoshop')
           const uxp = require('uxp')
           const fs = uxp.storage.localFileSystem
 
@@ -1652,6 +1779,10 @@
 
           const targetLayerType = this.resolveReturnLayerType(returnSettings)
           imageInfo.name = this.resolveReturnLayerName(doc, payload.meta || {}, returnSettings)
+          const targetBounds = this.resolvePlacementTargetBounds(
+            placement,
+            payload.meta || {},
+          )
 
           const tempFolder = await fs.getTemporaryFolder()
           const extension = imageData.includes('image/jpeg') ? 'jpg' : 'png'
@@ -1659,55 +1790,24 @@
             overwrite: true,
           })
           await tempFile.write(this.dataUrlToArrayBuffer(imageData))
-
           const token = await fs.createSessionToken(tempFile)
-          void token
 
-          let placedLayer = null
-          let importError = null
           let degradedToPixelLayer = false
-          let actualLayerType = ''
+          let actualLayerType = 'smartObject'
+          let placedLayer = null
 
           try {
-            placedLayer = await this.importImageViaDocumentFallback(
-              tempFile,
-              doc,
-              'smartObject',
-            )
-            actualLayerType = 'smartObject'
-          } catch (error) {
-            importError = error
-          }
-
-          if (!placedLayer) {
-            try {
-              placedLayer = await this.importImageViaDocumentFallback(
-                tempFile,
-                doc,
-                'pixelLayer',
-              )
-              actualLayerType = 'pixelLayer'
-              degradedToPixelLayer = targetLayerType === 'smartObject'
-            } catch (pixelFallbackError) {
-              if (importError) {
-                const primaryMessage = this.buildPhotoshopImportError('智能对象导入', importError).message
-                const fallbackMessage = this.buildPhotoshopImportError('像素图层备用导入', pixelFallbackError).message
-                throw new Error(primaryMessage + '; ' + fallbackMessage)
-              }
-              throw this.buildPhotoshopImportError('像素图层备用导入', pixelFallbackError)
+            await this.placeFileAsSmartObject(token)
+            placedLayer = doc.activeLayers?.[0] || null
+            if (!placedLayer) {
+              throw new Error('直接导入后未找到目标图层')
             }
-          }
-
-          if (!placedLayer && importError) {
-            throw this.buildPhotoshopImportError('备用导入', importError)
+          } catch (error) {
+            throw this.buildPhotoshopImportError('直接导入', error)
           }
 
           if (placedLayer) {
             const currentBounds = await this.getLayerBounds(placedLayer)
-            const targetBounds = this.resolvePlacementTargetBounds(
-              placement,
-              payload.meta || {},
-            )
             const effectiveCurrentBounds = this.resolvePlacedCanvasBounds(
               currentBounds,
               payload.meta || {},

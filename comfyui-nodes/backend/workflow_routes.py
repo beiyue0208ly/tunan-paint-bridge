@@ -56,7 +56,7 @@ class WorkflowRouteService:
 
     async def request_tabs_state(self):
         state = self.get_tabs_state()
-        LOGGER.warning(
+        LOGGER.debug(
             "[WorkflowRoute] request_tabs_state:start current_tab=%s tabs=%s session=%s",
             state.get("current_tab"),
             len(state.get("tabs", [])),
@@ -72,7 +72,7 @@ class WorkflowRouteService:
 
         for event_name in ("tunan_request_current_workflow", "tunan_request_tabs"):
             try:
-                LOGGER.warning("[WorkflowRoute] request_tabs_state:prompt_frontend event=%s", event_name)
+                LOGGER.debug("[WorkflowRoute] request_tabs_state:prompt_frontend event=%s", event_name)
                 await self.prompt_server.instance.send(event_name, request_payload)
             except Exception:
                 LOGGER.exception("[WorkflowRoute] request_tabs_state:prompt_frontend_failed event=%s", event_name)
@@ -81,7 +81,7 @@ class WorkflowRouteService:
         for delay in (0.12, 0.32, 0.7):
             await asyncio.sleep(delay)
             state = self.get_tabs_state()
-            LOGGER.warning(
+            LOGGER.debug(
                 "[WorkflowRoute] request_tabs_state:retry delay=%.2f current_tab=%s tabs=%s session=%s",
                 delay,
                 state.get("current_tab"),
@@ -96,7 +96,7 @@ class WorkflowRouteService:
     async def set_control_target(self, session_id="", mode="auto"):
         if session_id and session_id != "auto":
             if workflow_backend.frontend_tab_sessions.get(session_id) is None:
-                LOGGER.warning(
+                LOGGER.debug(
                     "[WorkflowRoute] set_control_target:stale_session session=%s fallback=auto",
                     session_id,
                 )
