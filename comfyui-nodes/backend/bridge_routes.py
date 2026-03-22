@@ -359,7 +359,7 @@ def register_bridge_routes(
                     "ws": f"ws://127.0.0.1:{actual_port}/tunan/ps/ws",
                     "http": f"http://127.0.0.1:{actual_port}",
                 },
-                "version": "1.0.9",
+                "version": "1.0.10",
                 "service": "TuNanPaintBridge",
             }
         )

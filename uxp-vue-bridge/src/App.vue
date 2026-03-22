@@ -20,7 +20,10 @@
       :api-model-options="apiModelOptions"
       :api-models-loading="apiModelsLoading"
       :api-models-error="apiModelsError"
+      :diagnostic-entries="diagnosticEntries"
+      :diagnostic-summary-text="diagnosticSummaryText"
       :can-clear-result-history="hasAnyResultHistory"
+      @clear-diagnostic-logs="clearDiagnosticLogs"
       @clear-result-history="clearResultHistoryCache"
       @connect="handleConnect"
       @control-target-change="handleControlTargetChange"
@@ -343,6 +346,7 @@ const {
   connectionBadgePhase,
   canRunCurrentWorkflow,
   canSendOnly,
+  clearDiagnosticLogs,
   currentWorkflowModified,
   currentWorkflow,
   currentWorkflowId,
@@ -350,6 +354,8 @@ const {
   connectionPhase,
   connectionStatusText,
   detectedComfyInstances,
+  diagnosticEntries,
+  diagnosticSummaryText,
   inactiveDetectedComfyInstances,
   taskErrorMessage,
   cfgScale,

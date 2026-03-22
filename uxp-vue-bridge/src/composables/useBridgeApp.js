@@ -15,6 +15,9 @@ import {
   UNSYNCED_WORKFLOW_LABEL,
 } from '../core/workflows/workflowStore'
 
+const DIAGNOSTIC_STORAGE_KEY = 'comfyps_diagnostic_log_v1'
+const DIAGNOSTIC_LOG_LIMIT = 180
+
 function normalizeWorkflowName(name) {
   return name || UNSYNCED_WORKFLOW_LABEL
 }
@@ -23,6 +26,66 @@ function normalizePersistentSettingsSnapshot(rawSettings = {}) {
   return {
     ...normalizeSettingsSnapshot(rawSettings || {}),
     controlFrontendTarget: '',
+  }
+}
+
+function truncateDiagnosticString(value, maxLength = 280) {
+  const text = String(value ?? '')
+  if (text.length <= maxLength) return text
+  return `${text.slice(0, Math.max(0, maxLength - 1))}…`
+}
+
+function sanitizeDiagnosticDetails(value, depth = 0) {
+  if (value === null || value === undefined) return value
+  if (depth >= 3) return truncateDiagnosticString(value, 160)
+
+  if (typeof value === 'string') {
+    return truncateDiagnosticString(value, 280)
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value
+  }
+
+  if (Array.isArray(value)) {
+    return value.slice(0, 10).map((item) => sanitizeDiagnosticDetails(item, depth + 1))
+  }
+
+  if (typeof value === 'object') {
+    const nextObject = {}
+    for (const key of Object.keys(value).slice(0, 16)) {
+      if (/(^|_)(image|raw|pixels|data_url|data)$/i.test(String(key))) {
+        continue
+      }
+      const normalizedValue = sanitizeDiagnosticDetails(value[key], depth + 1)
+      if (normalizedValue === undefined) continue
+      nextObject[key] = normalizedValue
+    }
+    return nextObject
+  }
+
+  return truncateDiagnosticString(value, 120)
+}
+
+function loadStoredDiagnosticEntries() {
+  try {
+    const raw = localStorage.getItem(DIAGNOSTIC_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .map((entry) => ({
+        id: String(entry?.id || ''),
+        ts: Number(entry?.ts || Date.now()),
+        level: String(entry?.level || 'info'),
+        scope: String(entry?.scope || 'app'),
+        message: truncateDiagnosticString(entry?.message || '', 220),
+        details: sanitizeDiagnosticDetails(entry?.details ?? {}, 0),
+      }))
+      .filter((entry) => entry.id && entry.message)
+      .slice(0, DIAGNOSTIC_LOG_LIMIT)
+  } catch {
+    return []
   }
 }
 
@@ -108,6 +171,94 @@ export function useBridgeApp() {
   const apiTaskElapsedMs = ref(0)
   const apiBadgeLastState = ref('idle')
   const apiBadgeLastError = ref('')
+  const diagnosticEntries = ref(loadStoredDiagnosticEntries())
+
+  function persistDiagnosticEntries() {
+    try {
+      localStorage.setItem(
+        DIAGNOSTIC_STORAGE_KEY,
+        JSON.stringify(diagnosticEntries.value.slice(0, DIAGNOSTIC_LOG_LIMIT)),
+      )
+    } catch {
+      // ignore persistence failures
+    }
+  }
+
+  function appendDiagnosticLog(level = 'info', scope = 'app', message = '', details = {}) {
+    const normalizedMessage = truncateDiagnosticString(message || '', 220).trim()
+    if (!normalizedMessage) return
+
+    diagnosticEntries.value = [
+      {
+        id: `diag_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        ts: Date.now(),
+        level: ['info', 'warn', 'error'].includes(level) ? level : 'info',
+        scope: String(scope || 'app').trim() || 'app',
+        message: normalizedMessage,
+        details: sanitizeDiagnosticDetails(details ?? {}, 0),
+      },
+      ...diagnosticEntries.value,
+    ].slice(0, DIAGNOSTIC_LOG_LIMIT)
+
+    persistDiagnosticEntries()
+  }
+
+  function clearDiagnosticLogs() {
+    diagnosticEntries.value = []
+    persistDiagnosticEntries()
+  }
+
+  function formatDiagnosticTimestamp(timestamp) {
+    try {
+      return new Date(timestamp).toLocaleString('zh-CN', { hour12: false })
+    } catch {
+      return String(timestamp || '')
+    }
+  }
+
+  function buildDiagnosticSettingsSummary() {
+    return sanitizeDiagnosticDetails({
+      appMode: appMode.value,
+      host: settingsSnapshot.value.host,
+      port: settingsSnapshot.value.port,
+      autoConnect: settingsSnapshot.value.autoConnect,
+      captureMode: settingsSnapshot.value.captureMode,
+      layerBoundaryMode: settingsSnapshot.value.layerBoundaryMode,
+      useSelection: settingsSnapshot.value.useSelection,
+      selectionSendMode: settingsSnapshot.value.selectionSendMode,
+      sizeLimit: settingsSnapshot.value.sizeLimit,
+      imageFormat: settingsSnapshot.value.imageFormat,
+      jpegQuality: settingsSnapshot.value.jpegQuality,
+      realtimeAction: settingsSnapshot.value.realtimeAction,
+      realtimeDebounce: settingsSnapshot.value.realtimeDebounce,
+    })
+  }
+
+  const diagnosticSummaryText = computed(() => {
+    const headerLines = [
+      'ComfyPS Bridge Diagnostic Log',
+      `Generated: ${formatDiagnosticTimestamp(Date.now())}`,
+      `App Mode: ${appMode.value}`,
+      `Connection: ${connectionPhase.value}${activeConnectionEndpointText.value ? ` (${activeConnectionEndpointText.value})` : ''}`,
+      `Workflow: ${currentWorkflow.value || ''}`,
+      `Task: ${taskStore.currentTask.value?.kind || 'none'} / ${taskStore.currentTask.value?.status || 'idle'}`,
+      `Settings: ${JSON.stringify(buildDiagnosticSettingsSummary(), null, 2)}`,
+      '',
+      `Recent Events (${diagnosticEntries.value.length}):`,
+    ]
+
+    const eventLines = diagnosticEntries.value.map((entry) => {
+      const lines = [
+        `[${formatDiagnosticTimestamp(entry.ts)}] [${String(entry.level || 'info').toUpperCase()}] [${entry.scope}] ${entry.message}`,
+      ]
+      if (entry.details && Object.keys(entry.details).length > 0) {
+        lines.push(JSON.stringify(entry.details, null, 2))
+      }
+      return lines.join('\n')
+    })
+
+    return [...headerLines, ...eventLines].join('\n')
+  })
 
   const denoiseInt = computed(() => Math.round(denoiseValue.value * DENOISE_SLIDER_STEPS))
   const denoisePct = computed(() => denoiseVisualValue.value * 100)
@@ -505,7 +656,7 @@ export function useBridgeApp() {
   }
 
   function openSettingsPanel(tab = null) {
-    if (tab && ['connection', 'layer', 'document', 'interface'].includes(tab)) {
+    if (tab && ['connection', 'layer', 'document', 'interface', 'diagnostic'].includes(tab)) {
       settingsActiveTab.value = tab
     }
     showSettings.value = true
@@ -667,6 +818,11 @@ export function useBridgeApp() {
   function setTaskError(message, options = {}) {
     const errorText = String(message || '').trim()
     if (!errorText) return
+    appendDiagnosticLog('error', 'task', errorText, {
+      sticky: options.sticky === true,
+      kind: taskStore.currentTask.value?.kind || '',
+      status: taskStore.currentTask.value?.status || '',
+    })
     clearTaskErrorTimer()
     taskErrorMessage.value = errorText
     const sticky = options.sticky === true
@@ -942,6 +1098,13 @@ export function useBridgeApp() {
     } else {
       instanceScanStatusText.value = '正在扫描本机 ComfyUI...'
     }
+
+    appendDiagnosticLog('info', 'connection', options.auto ? '自动扫描本机 ComfyUI 实例' : '手动扫描本机 ComfyUI 实例', {
+      host: mergedConfig.host,
+      port: mergedConfig.port,
+      reason: options.reason || 'manual',
+      lastError: options.lastError || '',
+    })
 
     const sent = sendToHost(HOST_MESSAGE_TYPES.SCAN_COMFYUI_INSTANCES, {
       ...mergedConfig,
@@ -1229,6 +1392,15 @@ export function useBridgeApp() {
     const status = lifecycle.status || ''
     if (!status) return false
 
+    appendDiagnosticLog(status === 'disconnected' ? 'warn' : 'info', 'connection', `连接状态更新：${status}`, {
+      host: meta?.host || lifecycle.host || '',
+      port: meta?.port || lifecycle.port || '',
+      reason: lifecycle.reason || '',
+      attempt: lifecycle.attempt ?? '',
+      closeCode: lifecycle.closeCode ?? '',
+      wasClean: lifecycle.wasClean ?? '',
+    })
+
     if (status === 'connected') {
       syncConnectedPhase(meta)
       scheduleWorkflowResync({ restart: true })
@@ -1443,6 +1615,13 @@ export function useBridgeApp() {
     clearTaskError()
     clearUserStopRequested()
     const payload = buildComfyPayload()
+    appendDiagnosticLog('info', 'run', '发送运行工作流命令', {
+      workflow: payload.workflow || '',
+      workflowId: payload.workflowId || '',
+      sizeLimit: payload.settings?.sizeLimit || '',
+      imageFormat: payload.settings?.imageFormat || '',
+      useSelection: payload.settings?.useSelection,
+    })
     taskStore.beginTask('comfyui-run', payload, { status: 'pending' })
     sendToHost(HOST_MESSAGE_TYPES.RUN_WORKFLOW, payload)
   }
@@ -1452,6 +1631,13 @@ export function useBridgeApp() {
     clearTaskError()
     clearUserStopRequested()
     const payload = buildComfyPayload()
+    appendDiagnosticLog('info', 'run', '发送仅传图命令', {
+      workflow: payload.workflow || '',
+      workflowId: payload.workflowId || '',
+      sizeLimit: payload.settings?.sizeLimit || '',
+      imageFormat: payload.settings?.imageFormat || '',
+      useSelection: payload.settings?.useSelection,
+    })
     taskStore.beginTask('comfyui-send-only', payload, { status: 'pending' })
     sendToHost(HOST_MESSAGE_TYPES.SEND_ONLY, payload)
   }
@@ -1461,6 +1647,10 @@ export function useBridgeApp() {
     clearTaskError()
     clearUserStopRequested()
     const payload = buildComfyPayload()
+    appendDiagnosticLog('info', 'run', '发送仅运行工作流命令', {
+      workflow: payload.workflow || '',
+      workflowId: payload.workflowId || '',
+    })
     taskStore.beginTask('comfyui-run-only', payload, { status: 'pending' })
     sendToHost(HOST_MESSAGE_TYPES.RUN_ONLY, payload)
   }
@@ -1510,6 +1700,11 @@ export function useBridgeApp() {
     if (!taskStore.currentTask.value && !isExecutionRunning.value) return
     clearTaskError()
     markUserStopRequested()
+    appendDiagnosticLog('warn', 'run', '发送停止命令', {
+      kind: taskStore.currentTask.value?.kind || '',
+      status: taskStore.currentTask.value?.status || '',
+      promptId: executionState.value.promptId || '',
+    })
     sendToHost(HOST_MESSAGE_TYPES.STOP_TASK, {})
   }
 
@@ -1663,6 +1858,13 @@ export function useBridgeApp() {
       settings: settingsSnapshot.value,
     }
 
+    appendDiagnosticLog('info', 'api', '发送 API 生图请求', {
+      sendCanvas: payload.sendCanvas,
+      referenceCount: preparedReferenceImages.length,
+      promptLength: String(promptText || '').length,
+      activeProfileId: settingsSnapshot.value.activeApiProfileId || '',
+    })
+
     const task = taskStore.beginTask('api-generate', payload, { status: 'pending' })
     startApiTaskElapsedTimer(task.id)
     apiPrompt.value = ''
@@ -1693,6 +1895,11 @@ export function useBridgeApp() {
       ? normalizePersistentSettingsSnapshot(settingsOverride)
       : settingsSnapshot.value
 
+    appendDiagnosticLog('info', 'api', '请求拉取 API 模型列表', {
+      baseUrl: nextSettings.apiBaseUrl || '',
+      activeProfileId: nextSettings.activeApiProfileId || '',
+    })
+
     const sent = sendToHost(HOST_MESSAGE_TYPES.FETCH_API_MODELS, {
       settings: nextSettings,
     })
@@ -1716,6 +1923,10 @@ export function useBridgeApp() {
     workflowStore.toggleDropdown(false)
     if (workflowId && workflowId === currentWorkflowId.value) return
     if (!workflowId && name === currentWorkflow.value) return
+    appendDiagnosticLog('info', 'workflow', '切换工作流标签', {
+      workflow: name || '',
+      workflowId: workflowId || '',
+    })
     sendToHost(HOST_MESSAGE_TYPES.SWITCH_WORKFLOW, {
       workflow: name,
       workflowId,
@@ -1737,6 +1948,11 @@ export function useBridgeApp() {
 
   function handleConnect(config) {
     const mergedConfig = mergeConnectionConfig(config || {})
+    appendDiagnosticLog('info', 'connection', '手动发起连接', {
+      host: mergedConfig.host,
+      port: mergedConfig.port,
+      controlFrontendTarget: mergedConfig.controlFrontendTarget || '',
+    })
 
     resetAutoConnectState()
     clearInstanceScanState()
@@ -1772,6 +1988,11 @@ export function useBridgeApp() {
     const instanceId = `${host}:${port}`
     markInstanceShutdownState(instanceId, true)
     instanceScanStatusText.value = `正在关闭 ${host}:${port}...`
+    appendDiagnosticLog('warn', 'connection', '请求关闭 ComfyUI 后端', {
+      host,
+      port,
+      isCurrentConnection: instanceId === activeConnectionEndpointText.value,
+    })
     const sent = sendToHost(HOST_MESSAGE_TYPES.SHUTDOWN_COMFYUI_INSTANCE, { host, port })
     if (!sent) {
       markInstanceShutdownState(instanceId, false)
@@ -1804,6 +2025,9 @@ export function useBridgeApp() {
     setConnectionPhase('disconnected', { error: '' })
     workflowStore.clear()
     closeActionMenu()
+    appendDiagnosticLog('info', 'connection', '手动断开连接', {
+      endpoint: activeConnectionEndpointText.value || '',
+    })
     sendToHost(HOST_MESSAGE_TYPES.DISCONNECT_COMFYUI, {
       ...settingsSnapshot.value,
     })
@@ -1856,6 +2080,12 @@ export function useBridgeApp() {
   function sendToPS() {
     const resultStore = activeResultStore.value
     if (!resultStore.mainImage.value) return
+    appendDiagnosticLog('info', 'photoshop', '发送结果回 Photoshop', {
+      sourceMode: appMode.value,
+      documentName: resultStore.mainMeta.value?.documentName || '',
+      sourceLayerName: resultStore.mainMeta.value?.sourceLayerName || '',
+      hasPlacement: Boolean(resultStore.mainMeta.value?.placement),
+    })
     sendToHost(HOST_MESSAGE_TYPES.ADD_IMAGE_TO_PS, {
       image: resultStore.mainImage.value,
       placement: resultStore.mainMeta.value?.placement ?? null,
@@ -1907,6 +2137,11 @@ export function useBridgeApp() {
     }
 
     if (message.type === 'HOST_ERROR') {
+      appendDiagnosticLog('error', 'host', message.result?.error || 'Host Error', {
+        requestType: message.result?.requestType || '',
+        host: message.result?.host || '',
+        port: message.result?.port || '',
+      })
       if (message.result?.requestType === HOST_MESSAGE_TYPES.FETCH_API_MODELS) {
         apiModelsLoading.value = false
         apiModelsError.value = message.result?.error || '模型列表读取失败'
@@ -2072,6 +2307,16 @@ export function useBridgeApp() {
 
     const result = message.result || {}
 
+    if (result.transportDiagnostics) {
+      const stage = String(result.transportDiagnostics.stage || 'prepared').trim() || 'prepared'
+      appendDiagnosticLog(
+        stage === 'failed' ? 'error' : 'info',
+        'transport',
+        `图像传输：${stage}`,
+        result.transportDiagnostics,
+      )
+    }
+
     if (message.type === `${HOST_MESSAGE_TYPES.FETCH_API_MODELS}_RESPONSE`) {
       apiModelsLoading.value = false
       if (result.error) {
@@ -2227,6 +2472,11 @@ export function useBridgeApp() {
 
     if (message.type === `${HOST_MESSAGE_TYPES.RUN_WORKFLOW}_RESPONSE`) {
       if (!result.error) {
+        appendDiagnosticLog('info', 'run', '工作流运行命令已被桥接接收', {
+          accepted: Boolean(result.accepted),
+          promptId: result.promptId || '',
+          workflow: result.currentWorkflow || currentWorkflow.value || '',
+        })
         clearExecutionProgressSettling()
         closeActionMenu()
         taskStore.setTaskStatus('pending', {
@@ -2238,6 +2488,9 @@ export function useBridgeApp() {
 
     if (message.type === `${HOST_MESSAGE_TYPES.SEND_ONLY}_RESPONSE`) {
       if (!result.error) {
+        appendDiagnosticLog('info', 'run', '仅传图命令已完成', {
+          accepted: Boolean(result.accepted),
+        })
         closeActionMenu()
         taskStore.finishTask('done', {
           accepted: Boolean(result.accepted),
@@ -2247,6 +2500,10 @@ export function useBridgeApp() {
 
     if (message.type === `${HOST_MESSAGE_TYPES.RUN_ONLY}_RESPONSE`) {
       if (!result.error) {
+        appendDiagnosticLog('info', 'run', '仅运行工作流命令已被桥接接收', {
+          accepted: Boolean(result.accepted),
+          promptId: result.promptId || '',
+        })
         clearExecutionProgressSettling()
         closeActionMenu()
         taskStore.setTaskStatus('pending', {
@@ -2272,6 +2529,10 @@ export function useBridgeApp() {
     }
 
     if (result.error) {
+      appendDiagnosticLog('error', 'host', result.error, {
+        messageType: message.type || '',
+        requestType: result.requestType || '',
+      })
       if (hasRecentUserStopRequest() && isComfyExecutionTask()) {
         clearExecutionProgressSettling()
         executionState.value = {
@@ -2384,6 +2645,10 @@ export function useBridgeApp() {
     window.addEventListener('focus', handleWindowFocus)
     document.addEventListener('visibilitychange', handleVisibilityChange)
     unsubscribeHost = subscribeHostMessages(handleHostMessage)
+    appendDiagnosticLog('info', 'app', '诊断日志会话开始', {
+      connectionPhase: connectionPhase.value,
+      appMode: appMode.value,
+    })
 
     try {
       const saved = localStorage.getItem('comfyps_settings')
@@ -2557,7 +2822,10 @@ export function useBridgeApp() {
     connectionError,
     connectionPhase,
     connectionStatusText,
+    clearDiagnosticLogs,
     detectedComfyInstances: visibleDetectedComfyInstances,
+    diagnosticEntries,
+    diagnosticSummaryText,
     inactiveDetectedComfyInstances,
     taskErrorMessage,
     frontendTargetOptions,

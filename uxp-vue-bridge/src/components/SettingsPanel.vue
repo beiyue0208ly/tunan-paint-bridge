@@ -30,6 +30,7 @@
         <button class="tab-button" :class="{ active: currentTab === 'layer' }" @click="currentTab = 'layer'">图层</button>
         <button class="tab-button" :class="{ active: currentTab === 'document' }" @click="currentTab = 'document'">文档</button>
         <button class="tab-button" :class="{ active: currentTab === 'interface' }" @click="currentTab = 'interface'">界面</button>
+        <button class="tab-button" :class="{ active: currentTab === 'diagnostic' }" @click="currentTab = 'diagnostic'">诊断</button>
       </div>
 
       <div class="focus-recovery-note">
@@ -428,6 +429,35 @@
             <button class="btn-reset-large" @click="restoreDefaults">恢复默认设置</button>
           </div>
         </div>
+
+        <div v-show="currentTab === 'diagnostic'" class="tab-pane diagnostic-pane">
+          <div class="info-box">
+            这里会记录最近的连接、传输、报错和运行事件。以后别人电脑出问题时，让他打开这里，点“复制诊断日志”直接发给你就行。
+          </div>
+
+          <div class="diagnostic-toolbar">
+            <div class="diagnostic-meta">
+              最近 {{ props.diagnosticEntries.length }} 条事件
+            </div>
+            <div class="diagnostic-actions">
+              <button class="inline-action-btn primary" :disabled="!props.diagnosticSummaryText" @click="copyDiagnosticLogs">
+                {{ diagnosticCopyStatus || '复制诊断日志' }}
+              </button>
+              <button class="inline-action-btn danger compact" :disabled="!props.diagnosticEntries.length" @click="emit('clear-diagnostic-logs')">
+                清空日志
+              </button>
+            </div>
+          </div>
+
+          <textarea
+            class="diagnostic-textarea"
+            :value="props.diagnosticSummaryText"
+            readonly
+            spellcheck="false"
+            @click.stop
+            @keydown.stop
+          ></textarea>
+        </div>
       </div>
 
       <div class="settings-footer">
@@ -631,7 +661,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   createApiProfileDraft,
   DEFAULT_SETTINGS,
@@ -666,6 +696,8 @@ const props = defineProps({
   apiModelOptions: { type: Array, default: () => [] },
   apiModelsLoading: { type: Boolean, default: false },
   apiModelsError: { type: String, default: '' },
+  diagnosticEntries: { type: Array, default: () => [] },
+  diagnosticSummaryText: { type: String, default: '' },
   canClearResultHistory: { type: Boolean, default: false },
 })
 
@@ -680,6 +712,7 @@ const emit = defineEmits([
   'mode-change',
   'control-target-change',
   'settings-change',
+  'clear-diagnostic-logs',
   'clear-result-history',
 ])
 
@@ -765,6 +798,8 @@ const customSizeInput = ref(String(DEFAULT_SETTINGS.customSizeValue))
 const selectionExpandInput = ref(String(DEFAULT_SETTINGS.selectionExpandPx))
 const jpegQualityInput = ref(String(DEFAULT_SETTINGS.jpegQuality))
 const notificationDurationInput = ref(String(DEFAULT_SETTINGS.notificationDuration))
+const diagnosticCopyStatus = ref('')
+let diagnosticCopyTimer = null
 
 const settingsConnectionButtonText = computed(() => {
   if (props.isConnected) return '断开连接'
@@ -1038,7 +1073,7 @@ watch(
 watch(
   () => props.activeTab,
   (nextTab) => {
-    if (['connection', 'layer', 'document', 'interface'].includes(nextTab)) {
+    if (['connection', 'layer', 'document', 'interface', 'diagnostic'].includes(nextTab)) {
       currentTab.value = nextTab
     }
   },
@@ -1085,6 +1120,44 @@ function close() {
   focusLog('panel:close')
   lastFocusedSettingsInputRef.value = null
   emit('update:visible', false)
+}
+
+function setDiagnosticCopyStatus(message = '') {
+  diagnosticCopyStatus.value = message
+  if (diagnosticCopyTimer) {
+    clearTimeout(diagnosticCopyTimer)
+    diagnosticCopyTimer = null
+  }
+  if (!message) return
+  diagnosticCopyTimer = setTimeout(() => {
+    diagnosticCopyTimer = null
+    diagnosticCopyStatus.value = ''
+  }, 1800)
+}
+
+async function copyDiagnosticLogs() {
+  const text = String(props.diagnosticSummaryText || '').trim()
+  if (!text) return
+
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.setAttribute('readonly', 'readonly')
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      textarea.style.pointerEvents = 'none'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
+    setDiagnosticCopyStatus('已复制')
+  } catch {
+    setDiagnosticCopyStatus('复制失败')
+  }
 }
 
 function isRestorableSettingsInput(target) {
@@ -1565,6 +1638,13 @@ watch(apiEditorVisible, async (nextVisible) => {
       const length = apiEditorNameInputRef.value.value?.length || 0
       apiEditorNameInputRef.value.setSelectionRange(length, length)
     }
+  }
+})
+
+onBeforeUnmount(() => {
+  if (diagnosticCopyTimer) {
+    clearTimeout(diagnosticCopyTimer)
+    diagnosticCopyTimer = null
   }
 })
 
@@ -2575,6 +2655,43 @@ watch(apiEditorVisible, async (nextVisible) => {
   border: none;
   background: #b84d4d;
   color: #fff;
+}
+
+.diagnostic-pane {
+  gap: 10px;
+}
+
+.diagnostic-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.diagnostic-meta {
+  font-size: 11px;
+  color: #b8b8b8;
+}
+
+.diagnostic-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.diagnostic-textarea {
+  width: 100%;
+  min-height: 260px;
+  resize: vertical;
+  border: 1px solid #4b4b4b;
+  border-radius: 8px;
+  padding: 10px;
+  background: #171717;
+  color: #dcdcdc;
+  font-size: 11px;
+  line-height: 1.5;
+  font-family: 'Consolas', 'SFMono-Regular', monospace;
+  box-sizing: border-box;
 }
 </style>
 

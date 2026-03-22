@@ -3,6 +3,7 @@
   const MAX_COMPLETED_PROMPT_IDS = 40
   const COMPLETED_PROMPT_ID_TTL_MS = 10 * 60 * 1000
   const ACTIVE_FRONTEND_STALE_SECONDS = 12
+  const WS_BINARY_CHUNK_SIZE = 4 * 1024 * 1024
 
   class TunanComfyEngine {
     constructor(workflowService, emit) {
@@ -338,6 +339,17 @@
           host: this.config.host,
           port: this.config.port,
           mode: 'comfyui',
+        },
+      })
+    }
+
+    emitTransportDiagnostics(payload = {}) {
+      this.emitState({
+        transportDiagnostics: {
+          host: this.config.host,
+          port: this.config.port,
+          timestamp: Date.now(),
+          ...payload,
         },
       })
     }
@@ -1131,6 +1143,24 @@
       return new Uint8Array(buffer)
     }
 
+    detectImageFormatFromDataUrl(dataUrl, fallbackFormat = 'png') {
+      const matchedMime = String(dataUrl || '').match(/^data:(image\/[a-z0-9.+-]+);base64,/i)
+      const mimeType = String(matchedMime?.[1] || '').toLowerCase()
+      if (mimeType.includes('jpeg') || mimeType.includes('jpg')) return 'jpg'
+      if (mimeType.includes('png')) return 'png'
+
+      const normalizedFallback = String(fallbackFormat || '').toLowerCase()
+      return normalizedFallback === 'jpeg' ? 'jpg' : normalizedFallback || 'png'
+    }
+
+    normalizeEncodedImageFormat(rawFormat = 'png') {
+      const normalized = String(rawFormat || '').trim().toLowerCase()
+      if (normalized === 'jpg' || normalized === 'jpeg') {
+        return 'jpg'
+      }
+      return 'png'
+    }
+
     bytesToBase64(bytes) {
       if (!bytes?.length) {
         return ''
@@ -1143,6 +1173,288 @@
         binary += String.fromCharCode(...chunk)
       }
       return btoa(binary)
+    }
+
+    createCanvasImageData(ctx, rgba, width, height) {
+      const imageData = typeof ImageData === 'function'
+        ? new ImageData(rgba, width, height)
+        : ctx.createImageData(width, height)
+      if (typeof imageData?.data?.set === 'function') {
+        imageData.data.set(rgba)
+      }
+      return imageData
+    }
+
+    buildCanvasRgbaFromRawAsset(asset = {}, { flattenAlpha = false, useLastComponentAsAlphaOnly = false } = {}) {
+      const rawPixels = asset.rawPixels instanceof Uint8Array
+        ? asset.rawPixels
+        : asset.rawPixels
+          ? new Uint8Array(asset.rawPixels)
+          : null
+      if (!rawPixels?.length) {
+        return null
+      }
+
+      const sourceWidth = Math.max(1, Math.round(asset.sourceWidth || asset.canvasWidth || asset.width || 1))
+      const sourceHeight = Math.max(1, Math.round(asset.sourceHeight || asset.canvasHeight || asset.height || 1))
+      const canvasWidth = Math.max(1, Math.round(asset.canvasWidth || sourceWidth))
+      const canvasHeight = Math.max(1, Math.round(asset.canvasHeight || sourceHeight))
+      const outputWidth = Math.max(1, Math.round(asset.width || canvasWidth))
+      const outputHeight = Math.max(1, Math.round(asset.height || canvasHeight))
+      const offsetX = Math.round(asset.offsetX || 0)
+      const offsetY = Math.round(asset.offsetY || 0)
+      const components = Math.max(1, Math.round(asset.components || 4))
+      const rgba = new Uint8ClampedArray(canvasWidth * canvasHeight * 4)
+
+      for (let y = 0; y < sourceHeight; y += 1) {
+        for (let x = 0; x < sourceWidth; x += 1) {
+          const destX = x + offsetX
+          const destY = y + offsetY
+          if (destX < 0 || destX >= canvasWidth || destY < 0 || destY >= canvasHeight) {
+            continue
+          }
+
+          const srcIndex = (y * sourceWidth + x) * components
+          const dstIndex = (destY * canvasWidth + destX) * 4
+
+          if (useLastComponentAsAlphaOnly) {
+            const alphaValue = components === 1
+              ? rawPixels[srcIndex]
+              : rawPixels[srcIndex + components - 1]
+            rgba[dstIndex] = 255
+            rgba[dstIndex + 1] = 255
+            rgba[dstIndex + 2] = 255
+            rgba[dstIndex + 3] = alphaValue
+            continue
+          }
+
+          if (components === 1) {
+            const value = rawPixels[srcIndex]
+            rgba[dstIndex] = value
+            rgba[dstIndex + 1] = value
+            rgba[dstIndex + 2] = value
+            rgba[dstIndex + 3] = 255
+          } else if (components === 2) {
+            const value = rawPixels[srcIndex]
+            rgba[dstIndex] = value
+            rgba[dstIndex + 1] = value
+            rgba[dstIndex + 2] = value
+            rgba[dstIndex + 3] = rawPixels[srcIndex + 1]
+          } else {
+            rgba[dstIndex] = rawPixels[srcIndex]
+            rgba[dstIndex + 1] = rawPixels[srcIndex + 1]
+            rgba[dstIndex + 2] = rawPixels[srcIndex + 2]
+            rgba[dstIndex + 3] = components >= 4 ? rawPixels[srcIndex + 3] : 255
+          }
+        }
+      }
+
+      if (!flattenAlpha) {
+        return {
+          rgba,
+          canvasWidth,
+          canvasHeight,
+          outputWidth,
+          outputHeight,
+        }
+      }
+
+      const flattened = new Uint8ClampedArray(canvasWidth * canvasHeight * 4)
+      const pixelCount = canvasWidth * canvasHeight
+      for (let pixelIndex = 0; pixelIndex < pixelCount; pixelIndex += 1) {
+        const srcIndex = pixelIndex * 4
+        const alpha = rgba[srcIndex + 3] / 255
+        const matte = 255
+        flattened[srcIndex] = Math.round(rgba[srcIndex] * alpha + matte * (1 - alpha))
+        flattened[srcIndex + 1] = Math.round(rgba[srcIndex + 1] * alpha + matte * (1 - alpha))
+        flattened[srcIndex + 2] = Math.round(rgba[srcIndex + 2] * alpha + matte * (1 - alpha))
+        flattened[srcIndex + 3] = 255
+      }
+
+      return {
+        rgba: flattened,
+        canvasWidth,
+        canvasHeight,
+        outputWidth,
+        outputHeight,
+      }
+    }
+
+    resizeDataUrl(dataUrl, width, height, mimeType = 'image/png', quality = 1) {
+      if (!dataUrl || typeof document === 'undefined') {
+        return Promise.resolve(dataUrl)
+      }
+
+      return new Promise((resolve) => {
+        try {
+          const image = document.createElement('img')
+          image.onload = () => {
+            try {
+              const canvas = document.createElement('canvas')
+              canvas.width = Math.max(1, Math.round(width || image.naturalWidth || image.width || 1))
+              canvas.height = Math.max(1, Math.round(height || image.naturalHeight || image.height || 1))
+              const ctx = canvas.getContext('2d')
+              if (!ctx) {
+                resolve(dataUrl)
+                return
+              }
+
+              ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+              resolve(canvas.toDataURL(mimeType, quality))
+            } catch {
+              resolve(dataUrl)
+            }
+          }
+          image.onerror = () => resolve(dataUrl)
+          image.src = dataUrl
+        } catch {
+          resolve(dataUrl)
+        }
+      })
+    }
+
+    async rawImagePayloadToDataUrl(asset = {}) {
+      if (typeof document === 'undefined') {
+        return ''
+      }
+
+      const format = this.normalizeEncodedImageFormat(asset.outputFormat || asset.format || 'png')
+      const renderPayload = this.buildCanvasRgbaFromRawAsset(asset, {
+        flattenAlpha: format === 'jpg',
+      })
+      if (!renderPayload) {
+        return ''
+      }
+
+      const {
+        rgba,
+        canvasWidth,
+        canvasHeight,
+        outputWidth,
+        outputHeight,
+      } = renderPayload
+      const canvas = document.createElement('canvas')
+      canvas.width = canvasWidth
+      canvas.height = canvasHeight
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        return ''
+      }
+
+      const imageData = this.createCanvasImageData(ctx, rgba, canvasWidth, canvasHeight)
+      ctx.putImageData(imageData, 0, 0)
+
+      const mimeType = format === 'jpg' ? 'image/jpeg' : 'image/png'
+      const quality = Math.max(0.1, Math.min(1, Number(asset.jpegQuality || 90) / 100))
+      const encoded = canvas.toDataURL(mimeType, quality)
+      if (outputWidth === canvasWidth && outputHeight === canvasHeight) {
+        return encoded
+      }
+
+      return this.resizeDataUrl(encoded, outputWidth, outputHeight, mimeType, quality)
+    }
+
+    async prepareImageTransport(image = {}) {
+      if (typeof image?.data === 'string' && image.data.startsWith('data:image/')) {
+        return {
+          bytes: await this.dataUrlToBytes(image.data),
+          format: this.detectImageFormatFromDataUrl(image.data, image.format || image.outputFormat || 'png'),
+          isRawTransport: false,
+        }
+      }
+
+      if (image?.rawPixels) {
+        const encoded = await this.rawImagePayloadToDataUrl(image)
+        if (encoded) {
+          return {
+            bytes: await this.dataUrlToBytes(encoded),
+            format: this.detectImageFormatFromDataUrl(
+              encoded,
+              image.outputFormat || image.format || 'png',
+            ),
+            isRawTransport: false,
+          }
+        }
+
+        return {
+          bytes: image.rawPixels instanceof Uint8Array ? image.rawPixels : new Uint8Array(image.rawPixels),
+          format: image.format || 'raw',
+          isRawTransport: true,
+        }
+      }
+
+      throw new Error('没有可上传的 Photoshop 图像')
+    }
+
+    async rawMaskPayloadToDataUrl(asset = {}) {
+      if (typeof document === 'undefined') {
+        return ''
+      }
+
+      const renderPayload = this.buildCanvasRgbaFromRawAsset(asset, {
+        useLastComponentAsAlphaOnly: true,
+      })
+      if (!renderPayload) {
+        return ''
+      }
+      const {
+        rgba,
+        canvasWidth,
+        canvasHeight,
+        outputWidth,
+        outputHeight,
+      } = renderPayload
+
+      const canvas = document.createElement('canvas')
+      canvas.width = canvasWidth
+      canvas.height = canvasHeight
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        return ''
+      }
+
+      const imageData = this.createCanvasImageData(ctx, rgba, canvasWidth, canvasHeight)
+      ctx.putImageData(imageData, 0, 0)
+      const encoded = canvas.toDataURL('image/png')
+      if (outputWidth === canvasWidth && outputHeight === canvasHeight) {
+        return encoded
+      }
+
+      return this.resizeDataUrl(encoded, outputWidth, outputHeight, 'image/png', 1)
+    }
+
+    async appendMaskMetadata(binaryMeta, prefix, asset = null) {
+      if (!asset) {
+        return
+      }
+
+      if (asset.rawPixels) {
+        const encoded = await this.rawMaskPayloadToDataUrl(asset)
+        if (encoded) {
+          binaryMeta[`${prefix}_data`] = encoded.includes(',')
+            ? encoded.split(',', 2)[1]
+            : encoded
+          binaryMeta[`${prefix}_format`] = 'png'
+          return
+        }
+      }
+
+      if (asset.data) {
+        binaryMeta[`${prefix}_data`] = asset.data.includes(',')
+          ? asset.data.split(',', 2)[1]
+          : asset.data
+        binaryMeta[`${prefix}_format`] = asset.format || 'png'
+      }
+    }
+
+    async sendBinaryChunks(bytes, chunkSize = WS_BINARY_CHUNK_SIZE) {
+      const binary = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+      const safeChunkSize = Math.max(64 * 1024, Math.round(chunkSize || WS_BINARY_CHUNK_SIZE))
+
+      for (let offset = 0; offset < binary.byteLength; offset += safeChunkSize) {
+        const chunk = binary.subarray(offset, Math.min(binary.byteLength, offset + safeChunkSize))
+        this.ws.send(chunk)
+      }
     }
 
     async uploadCaptureViaWs(capture = {}) {
@@ -1160,17 +1472,16 @@
         )
       }
 
-      const imageBytes = capture.image.rawPixels
-        ? capture.image.rawPixels
-        : await this.dataUrlToBytes(capture.image.data)
-      const format = capture.image.format || 'png'
+      const imageTransport = await this.prepareImageTransport(capture.image)
+      const imageBytes = imageTransport.bytes
+      const format = imageTransport.format || 'png'
       const requestId = this.createRequestId('binary')
       const binaryMeta = {
         ...(capture.meta || {}),
         original_placement: capture.placement || null,
       }
 
-      if (capture.image.rawPixels) {
+      if (imageTransport.isRawTransport && capture.image.rawPixels) {
         binaryMeta.raw_image = true
         binaryMeta.raw_components = capture.image.components
         binaryMeta.raw_source_width = capture.image.sourceWidth
@@ -1185,62 +1496,65 @@
         binaryMeta.raw_jpeg_quality = capture.image.jpegQuality || 90
       }
 
-      if (capture.selectionMask?.rawPixels) {
-        binaryMeta.selection_mask_raw = true
-        binaryMeta.selection_mask_raw_data = this.bytesToBase64(capture.selectionMask.rawPixels)
-        binaryMeta.selection_mask_components = capture.selectionMask.components
-        binaryMeta.selection_mask_source_width = capture.selectionMask.sourceWidth
-        binaryMeta.selection_mask_source_height = capture.selectionMask.sourceHeight
-        binaryMeta.selection_mask_canvas_width = capture.selectionMask.canvasWidth
-        binaryMeta.selection_mask_canvas_height = capture.selectionMask.canvasHeight
-        binaryMeta.selection_mask_offset_x = capture.selectionMask.offsetX
-        binaryMeta.selection_mask_offset_y = capture.selectionMask.offsetY
-        binaryMeta.selection_mask_target_width = capture.selectionMask.width
-        binaryMeta.selection_mask_target_height = capture.selectionMask.height
-      } else if (capture.selectionMask?.data) {
-        binaryMeta.selection_mask_data = capture.selectionMask.data.includes(',')
-          ? capture.selectionMask.data.split(',', 2)[1]
-          : capture.selectionMask.data
-        binaryMeta.selection_mask_format = capture.selectionMask.format || 'png'
+      await this.appendMaskMetadata(binaryMeta, 'selection_mask', capture.selectionMask)
+      await this.appendMaskMetadata(binaryMeta, 'content_alpha', capture.contentAlpha)
+
+      const chunkCount = Math.max(1, Math.ceil(imageBytes.byteLength / WS_BINARY_CHUNK_SIZE))
+      const transportSummary = {
+        stage: 'prepared',
+        captureSource: capture.meta?.source || '',
+        imageFormat: format,
+        imageWidth: Number(capture.image.width || 0),
+        imageHeight: Number(capture.image.height || 0),
+        byteLength: Number(imageBytes.byteLength || 0),
+        chunkCount,
+        usedRawTransport: Boolean(imageTransport.isRawTransport),
+        selectionMaskIncluded: Boolean(binaryMeta.selection_mask_data || binaryMeta.selection_mask_format),
+        contentAlphaIncluded: Boolean(binaryMeta.content_alpha_data || binaryMeta.content_alpha_format),
       }
+      const transferStartedAt = Date.now()
+      this.emitTransportDiagnostics(transportSummary)
 
-      if (capture.contentAlpha?.rawPixels) {
-        binaryMeta.content_alpha_raw = true
-        binaryMeta.content_alpha_raw_data = this.bytesToBase64(capture.contentAlpha.rawPixels)
-        binaryMeta.content_alpha_components = capture.contentAlpha.components
-        binaryMeta.content_alpha_source_width = capture.contentAlpha.sourceWidth
-        binaryMeta.content_alpha_source_height = capture.contentAlpha.sourceHeight
-        binaryMeta.content_alpha_canvas_width = capture.contentAlpha.canvasWidth
-        binaryMeta.content_alpha_canvas_height = capture.contentAlpha.canvasHeight
-        binaryMeta.content_alpha_offset_x = capture.contentAlpha.offsetX
-        binaryMeta.content_alpha_offset_y = capture.contentAlpha.offsetY
-        binaryMeta.content_alpha_target_width = capture.contentAlpha.width
-        binaryMeta.content_alpha_target_height = capture.contentAlpha.height
+      try {
+        const waitBinaryStart = this.createPendingRequest(requestId, ['binary_start_ack'], 8000)
+        this.sendWsJson({
+          type: 'binary_start',
+          request_id: requestId,
+          name: capture.image.name || `ps_capture.${format}`,
+          size: imageBytes.byteLength,
+          format,
+          width: capture.image.width || 0,
+          height: capture.image.height || 0,
+          document_name: capture.meta?.document_name || capture.meta?.documentName || '',
+          timestamp: Date.now(),
+          chunks: chunkCount,
+          metadata: binaryMeta,
+        })
+        await waitBinaryStart
+
+        const transferTimeoutMs = Math.max(15000, chunkCount * 4000)
+        const waitBinaryEnd = this.createPendingRequest(requestId, ['binary_end_ack'], transferTimeoutMs)
+        await this.sendBinaryChunks(imageBytes)
+        this.sendWsJson({
+          type: 'binary_end',
+          request_id: requestId,
+        })
+        await waitBinaryEnd
+
+        this.emitTransportDiagnostics({
+          ...transportSummary,
+          stage: 'completed',
+          elapsedMs: Date.now() - transferStartedAt,
+        })
+      } catch (error) {
+        this.emitTransportDiagnostics({
+          ...transportSummary,
+          stage: 'failed',
+          elapsedMs: Date.now() - transferStartedAt,
+          error: error?.message || String(error),
+        })
+        throw error
       }
-
-      const waitBinaryStart = this.createPendingRequest(requestId, ['binary_start_ack'], 8000)
-      this.sendWsJson({
-        type: 'binary_start',
-        request_id: requestId,
-        name: capture.image.name || `ps_capture.${format}`,
-        size: imageBytes.byteLength,
-        format,
-        width: capture.image.width || 0,
-        height: capture.image.height || 0,
-        document_name: capture.meta?.document_name || capture.meta?.documentName || '',
-        timestamp: Date.now(),
-        chunks: 1,
-        metadata: binaryMeta,
-      })
-      await waitBinaryStart
-
-      const waitBinaryEnd = this.createPendingRequest(requestId, ['binary_end_ack'], 15000)
-      this.ws.send(imageBytes.buffer)
-      this.sendWsJson({
-        type: 'binary_end',
-        request_id: requestId,
-      })
-      await waitBinaryEnd
     }
 
     async runWorkflow(payload = {}) {

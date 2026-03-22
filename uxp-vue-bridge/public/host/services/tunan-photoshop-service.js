@@ -1666,25 +1666,28 @@
           let placedLayer = null
           let importError = null
           let degradedToPixelLayer = false
+          let actualLayerType = ''
 
           try {
             placedLayer = await this.importImageViaDocumentFallback(
               tempFile,
               doc,
-              targetLayerType,
+              'smartObject',
             )
+            actualLayerType = 'smartObject'
           } catch (error) {
             importError = error
           }
 
-          if (!placedLayer && targetLayerType === 'smartObject') {
+          if (!placedLayer) {
             try {
               placedLayer = await this.importImageViaDocumentFallback(
                 tempFile,
                 doc,
                 'pixelLayer',
               )
-              degradedToPixelLayer = true
+              actualLayerType = 'pixelLayer'
+              degradedToPixelLayer = targetLayerType === 'smartObject'
             } catch (pixelFallbackError) {
               if (importError) {
                 const primaryMessage = this.buildPhotoshopImportError('智能对象导入', importError).message
@@ -1714,8 +1717,9 @@
               await this.transformLayer(placedLayer, effectiveCurrentBounds, targetBounds)
             }
 
-            if (targetLayerType === 'pixelLayer') {
+            if (targetLayerType === 'pixelLayer' && actualLayerType === 'smartObject') {
               await this.rasterizeLayer(placedLayer)
+              actualLayerType = 'pixelLayer'
               placedLayer = doc.activeLayers[0] || placedLayer
             }
 
@@ -1730,7 +1734,7 @@
             supported: true,
             placed: true,
             name: imageInfo.name,
-            layerType: degradedToPixelLayer ? 'pixelLayer' : targetLayerType,
+            layerType: actualLayerType || (degradedToPixelLayer ? 'pixelLayer' : targetLayerType),
             degradedToPixelLayer,
           }
         },
@@ -1819,6 +1823,48 @@
       )
     }
 
+    approximatelyMatchesDimension(actual, expected, tolerancePx = 2, toleranceRatio = 0.005) {
+      const actualValue = Number(actual)
+      const expectedValue = Number(expected)
+
+      if (!Number.isFinite(actualValue) || !Number.isFinite(expectedValue)) {
+        return false
+      }
+
+      const tolerance = Math.max(tolerancePx, Math.abs(expectedValue) * toleranceRatio)
+      return Math.abs(actualValue - expectedValue) <= tolerance
+    }
+
+    boundsSizeMatches(bounds, expectedWidth, expectedHeight) {
+      if (!bounds) return false
+
+      return (
+        this.approximatelyMatchesDimension(bounds.width, expectedWidth) &&
+        this.approximatelyMatchesDimension(bounds.height, expectedHeight)
+      )
+    }
+
+    hasVisibleCanvasInset(imageWidth, imageHeight, visibleBounds) {
+      if (
+        imageWidth <= 0 ||
+        imageHeight <= 0 ||
+        !visibleBounds ||
+        !Number.isFinite(Number(visibleBounds.left)) ||
+        !Number.isFinite(Number(visibleBounds.top)) ||
+        !Number.isFinite(Number(visibleBounds.right)) ||
+        !Number.isFinite(Number(visibleBounds.bottom))
+      ) {
+        return false
+      }
+
+      return (
+        Number(visibleBounds.left) > 0 ||
+        Number(visibleBounds.top) > 0 ||
+        Number(visibleBounds.right) < imageWidth ||
+        Number(visibleBounds.bottom) < imageHeight
+      )
+    }
+
     inferPlacedCanvasBounds(currentVisibleBounds, meta = {}) {
       if (!currentVisibleBounds) return null
 
@@ -1900,23 +1946,38 @@
         return currentBounds
       }
 
-      const fullScaleX = currentBounds.width / imageWidth
-      const fullScaleY = currentBounds.height / imageHeight
-      const visibleScaleX = currentBounds.width / visibleWidth
-      const visibleScaleY = currentBounds.height / visibleHeight
-
-      const fullDelta = Math.abs(fullScaleX - fullScaleY)
-      const visibleDelta = Math.abs(visibleScaleX - visibleScaleY)
-
-      if (
-        Number.isFinite(fullDelta) &&
-        Number.isFinite(visibleDelta) &&
-        fullDelta <= visibleDelta
-      ) {
+      if (!this.hasVisibleCanvasInset(imageWidth, imageHeight, visibleBounds)) {
         return currentBounds
       }
 
-      return this.inferPlacedCanvasBounds(currentBounds, meta)
+      const matchesFullSize = this.boundsSizeMatches(currentBounds, imageWidth, imageHeight)
+      const matchesVisibleSize = this.boundsSizeMatches(currentBounds, visibleWidth, visibleHeight)
+
+      if (matchesFullSize && !matchesVisibleSize) {
+        return currentBounds
+      }
+
+      if (matchesVisibleSize && !matchesFullSize) {
+        return this.inferPlacedCanvasBounds(currentBounds, meta)
+      }
+
+      const currentAspect = currentBounds.width / currentBounds.height
+      const fullAspect = imageWidth / imageHeight
+      const visibleAspect = visibleWidth / visibleHeight
+      const fullAspectDelta = Math.abs(currentAspect - fullAspect)
+      const visibleAspectDelta = Math.abs(currentAspect - visibleAspect)
+
+      if (Number.isFinite(fullAspectDelta) && Number.isFinite(visibleAspectDelta)) {
+        if (fullAspectDelta + 0.0001 < visibleAspectDelta) {
+          return currentBounds
+        }
+
+        if (visibleAspectDelta + 0.0001 < fullAspectDelta) {
+          return this.inferPlacedCanvasBounds(currentBounds, meta)
+        }
+      }
+
+      return this.inferPlacedCanvasBounds(currentBounds, meta) || currentBounds
     }
 
     dataUrlToArrayBuffer(dataUrl) {

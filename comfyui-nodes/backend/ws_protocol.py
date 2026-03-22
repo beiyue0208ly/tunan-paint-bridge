@@ -15,6 +15,7 @@ from aiohttp import web
 from PIL import Image
 
 LOGGER = logging.getLogger("tunan.paint.bridge.ws")
+WS_MAX_MSG_SIZE = 32 * 1024 * 1024
 
 
 def register_ws_routes(
@@ -48,7 +49,7 @@ def register_ws_routes(
 
     @routes.get("/tunan/ps/ws")
     async def websocket_handler(request):
-        ws = web.WebSocketResponse(max_msg_size=15 * 1024 * 1024, timeout=60.0, heartbeat=30.0)
+        ws = web.WebSocketResponse(max_msg_size=WS_MAX_MSG_SIZE, timeout=60.0, heartbeat=30.0)
         await ws.prepare(request)
         client_ip = request.remote or "unknown"
         write_ws_log("open", client=client_ip)
